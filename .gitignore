@@ -1,0 +1,7 @@
+.claude/
+.idea/
+.vscode/
+build/
+cmake-build-*/
+log/
+install/
