@@ -43,6 +43,7 @@ enum {
   PROP_FRAME_ID,
   PROP_PREFER_COMPRESSED,
   PROP_SUBSCRIPTION_COUNT,
+  PROP_ENABLE_NV_FORMATS,
 };
 
 // Private data structure
@@ -53,6 +54,7 @@ struct _RbfImageSinkPrivate {
   gchar *frame_id;
   gpointer external_node; // rclcpp::Node*
   gboolean prefer_compressed;
+  gboolean enable_nv_formats;
 
   // ROS interface
   std::unique_ptr<RosNodeInterface> ros_interface;
@@ -131,6 +133,11 @@ static void rbf_image_sink_class_init( RbfImageSinkClass *klass )
                         "Number of subscribers to the image topic", 0, G_MAXINT, 0,
                         (GParamFlags)( G_PARAM_READABLE | G_PARAM_STATIC_STRINGS ) ) );
 
+  g_object_class_install_property(
+      gobject_class, PROP_ENABLE_NV_FORMATS,
+      g_param_spec_boolean( "enable-nv-formats", "Enable NV formats", "Enable NV formats (NV21, NV24)",
+                            FALSE, (GParamFlags)( G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS ) ) );
+
   // Set element metadata
   gst_element_class_set_static_metadata(
       element_class, "ROS Babel Fish Image Sink", "Sink/Video",
@@ -163,6 +170,7 @@ static void rbf_image_sink_init( RbfImageSink *sink )
   sink->priv->frame_id = g_strdup( "" );
   sink->priv->external_node = nullptr;
   sink->priv->prefer_compressed = TRUE;
+  sink->priv->enable_nv_formats = FALSE;
   sink->priv->is_compressed = FALSE;
   sink->priv->video_info_valid = FALSE;
 
@@ -242,6 +250,9 @@ static void rbf_image_sink_set_property( GObject *object, guint prop_id, const G
   case PROP_PREFER_COMPRESSED:
     sink->priv->prefer_compressed = g_value_get_boolean( value );
     break;
+  case PROP_ENABLE_NV_FORMATS:
+    sink->priv->enable_nv_formats = g_value_get_boolean( value );
+    break;
   default:
     G_OBJECT_WARN_INVALID_PROPERTY_ID( object, prop_id, pspec );
     break;
@@ -269,6 +280,9 @@ static void rbf_image_sink_get_property( GObject *object, guint prop_id, GValue 
     break;
   case PROP_PREFER_COMPRESSED:
     g_value_set_boolean( value, sink->priv->prefer_compressed );
+    break;
+  case PROP_ENABLE_NV_FORMATS:
+    g_value_set_boolean( value, sink->priv->enable_nv_formats );
     break;
   case PROP_SUBSCRIPTION_COUNT: {
     int count = 0;
@@ -396,6 +410,20 @@ static GstCaps *rbf_image_sink_get_caps( GstBaseSink *basesink, GstCaps *filter 
     GstCaps *intersection = gst_caps_intersect_full( filter, caps, GST_CAPS_INTERSECT_FIRST );
     gst_caps_unref( caps );
     caps = intersection;
+  }
+
+  // Filter out NV formats if disabled
+  if ( !sink->priv->enable_nv_formats ) {
+    guint i = 0;
+    while ( i < gst_caps_get_size( caps ) ) {
+      GstStructure *s = gst_caps_get_structure( caps, i );
+      const gchar *format = gst_structure_get_string( s, "format" );
+      if ( format && ( g_strcmp0( format, "NV21" ) == 0 || g_strcmp0( format, "NV24" ) == 0 ) ) {
+        gst_caps_remove_structure( caps, i );
+      } else {
+        i++;
+      }
+    }
   }
 
   return caps;

@@ -84,6 +84,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_rbfimagesrc_framerate
                   test/test_rbfimagesrc_framerate.cpp)
   target_link_libraries(test_rbfimagesrc_framerate gstrosbabelfish)
+
+  ament_add_gtest(test_nv_formats test/test_nv_formats.cpp)
+  target_link_libraries(test_nv_formats gstrosbabelfish)
 endif()
 
 # ##############################################################################

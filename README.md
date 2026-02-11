@@ -118,6 +118,7 @@ gst-launch-1.0 rbfimagesrc topic=/camera/image_raw/compressed ! jpegdec ! videoc
 - `qos-durability`: `volatile` (default) or `transient-local`
 - `qos-history-depth`: History depth for subscription (default: 1)
 - `wait-frame-count`: Number of frames to use for framerate detection (default: 5). Only used if `determine-framerate` is `true`.
+- `framerate`: Manual framerate to set on the source caps (e.g. "30/1")
 
 ### rbfimagesink Properties
 
@@ -127,6 +128,7 @@ gst-launch-1.0 rbfimagesrc topic=/camera/image_raw/compressed ! jpegdec ! videoc
 - `frame-id`: `frame_id` to set in the ROS message header
 - `prefer-compressed`: Whether to prefer compressed formats during negotiation (default: `true`)
 - `subscription-count`: Number of current subscriptions to the topic
+- `enable-nv-formats`: Enable NV formats (NV21, NV24) (default: `false`)
 
 ## License
 

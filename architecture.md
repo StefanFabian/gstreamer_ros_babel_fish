@@ -92,6 +92,9 @@ The plugin acts as a bridge between GStreamer multimedia pipelines and ROS 2 ima
 - `qos-reliability`: QoS reliability (best-effort/reliable)
 - `qos-durability`: QoS durability (volatile/transient-local)
 - `qos-history-depth`: QoS history depth
+- `determine-framerate`: Whether to determine framerate from input topics (default: `false`)
+- `wait-frame-count`: Number of frames to wait for framerate detection
+- `framerate`: Manual framerate override (e.g. "30/1")
 
 **Buffer Metadata:** Attaches `GstReferenceTimestampMeta` with `timestamp/x-unix` caps to each output buffer, carrying the original ROS header timestamp in nanoseconds. This allows downstream elements (including `rbfimagesink`) to recover the exact source timestamp even if the buffer PTS is modified by intermediate pipeline elements.
 
@@ -109,6 +112,8 @@ The plugin acts as a bridge between GStreamer multimedia pipelines and ROS 2 ima
 - `node`: External ROS node pointer
 - `frame-id`: frame_id for ROS message headers
 - `prefer-compressed`: Prefer compressed formats during caps negotiation
+- `enable-nv-formats`: Enable NV formats (NV21, NV24)
+- `subscription-count`: Number of accessible subscriptions (Read-only)
 
 **Timestamp Resolution:** When determining the ROS message timestamp, the sink first checks for a `GstReferenceTimestampMeta` with `timestamp/x-unix` caps on the buffer. If present and valid (> 0), this timestamp is used directly. Otherwise, falls back to computing the absolute time from `base_time + buffer PTS`, or uses the current wall clock time as a last resort.
 
