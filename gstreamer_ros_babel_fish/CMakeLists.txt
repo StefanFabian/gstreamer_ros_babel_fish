@@ -38,7 +38,7 @@ set_target_properties(gstrosbabelfish PROPERTIES PREFIX "")
 # ##############################################################################
 
 # Install to GStreamer plugin directory
-install(TARGETS gstrosbabelfish LIBRARY DESTINATION lib/gstreamer-1.0)
+install(TARGETS gstrosbabelfish LIBRARY DESTINATION lib/gstreamer-1.0-plugins)
 
 install(DIRECTORY include/ DESTINATION include)
 

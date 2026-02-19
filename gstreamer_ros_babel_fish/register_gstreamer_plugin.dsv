@@ -1,1 +1,1 @@
-prepend-non-duplicate;GST_PLUGIN_PATH;lib
+prepend-non-duplicate;GST_PLUGIN_PATH;lib/gstreamer-1.0-plugins
