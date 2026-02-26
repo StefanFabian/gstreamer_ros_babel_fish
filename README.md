@@ -73,7 +73,7 @@ gst-launch-1.0 rbfimagesrc topic=/camera/image_raw ! videoconvert ! autovideosin
 Generate a test video pattern and publish it to `/test_video`.
 
 ```bash
-gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,framerate=30/1 ! rbfimagesink topic=/test_video
+gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,framerate=30/1 ! rbfimagesink topic=/test_video sync=true
 ```
 
 #### 3. Publish Compressed Images
@@ -81,7 +81,7 @@ gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,framerate=30/1 ! 
 Encode video as JPEG and publish to `/compressed_video/compressed`.
 
 ```bash
-gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480 ! jpegenc ! rbfimagesink topic=/compressed_video
+gst-launch-1.0 videotestsrc ! video/x-raw,width=640,height=480,framerate=30/1 ! jpegenc ! rbfimagesink topic=/compressed_video sync=true
 ```
 
 > [!NOTE]
@@ -97,10 +97,10 @@ gst-launch-1.0 rbfimagesrc topic=/input_topic ! videoflip method=clockwise ! rbf
 
 #### 5. Using with Compressed Input
 
-Subscribe to a compressed topic `/camera/image_raw/compressed` (JPEG), decode it, and display.
+Subscribe to a compressed topic `/compressed_video/compressed` (JPEG), decode it, and display.
 
 ```bash
-gst-launch-1.0 rbfimagesrc topic=/camera/image_raw/compressed ! jpegdec ! videoconvert ! autovideosink
+gst-launch-1.0 rbfimagesrc determine-framerate=true topic=/compressed_video/compressed ! jpegdec ! videoconvert ! autovideosink
 ```
 
 > [!NOTE]

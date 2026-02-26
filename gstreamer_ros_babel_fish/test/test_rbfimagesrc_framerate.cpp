@@ -181,3 +181,154 @@ TEST_F( RbfImageSrcFramerateTest, DetermineFramerate )
 
   gst_object_unref( sink );
 }
+
+// Helper to pull the first sample after framerate determination
+static GstSample *pull_first_sample( GstElement *sink )
+{
+  GstSample *sample = nullptr;
+  for ( int retries = 0; !sample && retries < 30; retries++ ) {
+    g_signal_emit_by_name( sink, "pull-sample", &sample );
+    if ( !sample )
+      std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  }
+  return sample;
+}
+
+// Regression test for the original bug: timestamps with slight clock jitter produce a raw fps of
+// ~29.92 (0.27% off from 30.0). Previously gst_util_double_to_fraction() would turn this into
+// 15625000/522371. With integer rounding it should produce 30/1.
+TEST_F( RbfImageSrcFramerateTest, SnapsToStandardRateWithJitter )
+{
+  const std::string topic = "/test_snap_jitter";
+  auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
+
+  std::string pipeline_str = "rbfimagesrc topic=" + topic +
+                             " determine-framerate=true wait-frame-count=5 ! appsink name=sink "
+                             "emit-signals=true sync=false";
+
+  GError *error = nullptr;
+  pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
+  ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
+
+  GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Timestamps that yield avg_interval = 33,423,913 ns → fps ≈ 29.919 (0.27% off from 30.0).
+  // The computation uses only first and last of wait-frame-count=5 timestamps for the average;
+  // intermediate timestamps can carry arbitrary jitter without affecting the result.
+  rclcpp::Time base_time = node_->get_clock()->now();
+  const int64_t ts_ns[] = {
+      0LL,           33'333'333LL,  66'666'666LL,  99'999'999LL,
+      133'695'652LL, // t4: gives avg_interval = 33,423,913 ns → fps ≈ 29.919
+      167'029'565LL, 200'363'478LL, 233'697'391LL, 267'031'304LL, 300'365'217LL,
+  };
+  for ( int i = 0; i < 10; ++i ) {
+    pub->publish( *create_test_image( rclcpp::Time( base_time.nanoseconds() + ts_ns[i] ) ) );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 33 ) );
+  }
+
+  GstSample *sample = pull_first_sample( sink );
+  ASSERT_NE( sample, nullptr ) << "Failed to receive sample";
+
+  GstStructure *s = gst_caps_get_structure( gst_sample_get_caps( sample ), 0 );
+  int num, den;
+  gst_structure_get_fraction( s, "framerate", &num, &den );
+  EXPECT_EQ( num, 30 );
+  EXPECT_EQ( den, 1 );
+
+  gst_sample_unref( sample );
+  gst_object_unref( sink );
+}
+
+// Regression test: with determine-framerate=true the first pushed buffer must NOT have
+// PTS=0. Its PTS must approximate the pipeline running time at push, which is at least
+// (wait_frame_count - 1) * frame_interval (the collection phase duration).
+TEST_F( RbfImageSrcFramerateTest, DetermineFramerateFirstBufferPtsNotZero )
+{
+  const std::string topic = "/test_pts_not_zero";
+  auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
+
+  const int wait_frames = 5;
+  const int64_t interval_ns = 100'000'000LL; // 100ms → 10fps
+
+  std::string pipeline_str =
+      "rbfimagesrc topic=" + topic +
+      " determine-framerate=true wait-frame-count=" + std::to_string( wait_frames ) +
+      " ! appsink name=sink emit-signals=true sync=false";
+
+  GError *error = nullptr;
+  pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
+  ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
+
+  GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Publish wait_frames + 1 images at 10Hz so the determination completes and
+  // at least one frame is pushed downstream.
+  rclcpp::Time base_time = node_->get_clock()->now();
+  for ( int i = 0; i < wait_frames + 1; ++i ) {
+    pub->publish( *create_test_image( rclcpp::Time( base_time.nanoseconds() + i * interval_ns ) ) );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+  }
+
+  GstSample *sample = pull_first_sample( sink );
+  ASSERT_NE( sample, nullptr ) << "Failed to receive sample after framerate determination";
+
+  GstBuffer *buf = gst_sample_get_buffer( sample );
+  GstClockTime pts = GST_BUFFER_PTS( buf );
+
+  // PTS must not be 0 — it should reflect the pipeline running time at push,
+  // which is at least the collection duration: (wait_frames - 1) * interval.
+  // The actual running time also includes startup overhead (topic detection
+  // retries, subscription setup), so we only check a lower bound here.
+  GstClockTime min_expected = (GstClockTime)( wait_frames - 1 ) * interval_ns;
+  EXPECT_GT( pts, 0u ) << "First buffer PTS must not be 0 (sync=true would drop it)";
+  EXPECT_GE( pts, min_expected )
+      << "PTS should be at least (wait_frames-1)*interval (the collection duration)";
+
+  gst_sample_unref( sample );
+  gst_object_unref( sink );
+}
+
+// Verify that a non-standard rate (7fps is not in the standard table) falls back to
+// integer rounding and produces 7/1.
+TEST_F( RbfImageSrcFramerateTest, FallsBackToIntegerForNonStandardRate )
+{
+  const std::string topic = "/test_nonstandard_fps";
+  auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
+
+  std::string pipeline_str = "rbfimagesrc topic=" + topic +
+                             " determine-framerate=true wait-frame-count=5 ! appsink name=sink "
+                             "emit-signals=true sync=false";
+
+  GError *error = nullptr;
+  pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
+  ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
+
+  GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // 7fps → interval = 1e9 / 7 = 142,857,142 ns. Not in the standard table → rounds to 7/1.
+  // Use 100ms wall-clock sleep to keep the test fast; only header timestamps matter for fps.
+  rclcpp::Time base_time = node_->get_clock()->now();
+  const int64_t interval_ns = 1'000'000'000LL / 7; // 142,857,142 ns
+  for ( int i = 0; i < 10; ++i ) {
+    pub->publish( *create_test_image( rclcpp::Time( base_time.nanoseconds() + i * interval_ns ) ) );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+  }
+
+  GstSample *sample = pull_first_sample( sink );
+  ASSERT_NE( sample, nullptr ) << "Failed to receive sample";
+
+  GstStructure *s = gst_caps_get_structure( gst_sample_get_caps( sample ), 0 );
+  int num, den;
+  gst_structure_get_fraction( s, "framerate", &num, &den );
+  EXPECT_EQ( num, 7 );
+  EXPECT_EQ( den, 1 );
+
+  gst_sample_unref( sample );
+  gst_object_unref( sink );
+}

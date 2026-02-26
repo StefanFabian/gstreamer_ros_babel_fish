@@ -24,6 +24,7 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
+#include <cmath>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -717,19 +718,53 @@ static GstFlowReturn rbf_image_src_determine_framerate_from_input( RbfImageSrc *
     double avg_interval = duration_ns / ( src->priv->frame_timestamps.size() - 1 );
     double fps = 1e9 / avg_interval;
 
-    int num = 0, den = 1;
-    gst_util_double_to_fraction( fps, &num, &den );
+    int num = 1;
+    int den = 1;
+    if ( fps >= 1.0 ) {
+      num = (gint)std::lround( fps );
+    } else {
+      // For very low framerates, use a fractional representation to avoid rounding to 0 fps
+      den = (gint)std::lround( 1.0 / fps );
+    }
 
     src->priv->framerate_num = num;
     src->priv->framerate_den = den;
     src->priv->framerate_determined = TRUE;
-    GST_INFO_OBJECT( src, "Determined framerate: %d/%d (%.2f fps)", num, den, fps );
+    GST_INFO_OBJECT( src, "Determined framerate: %d/%d (measured: %.4f fps)", num, den, fps );
   } else {
     GST_WARNING_OBJECT( src,
                         "Could not determine framerate (invalid timestamps), defaulting to 0/1" );
     src->priv->framerate_num = 0;
     src->priv->framerate_den = 1;
     src->priv->framerate_determined = TRUE; // Stop trying
+  }
+  // Anchor first_timestamp so that the last collected frame (the one pushed
+  // downstream) gets a PTS equal to the current pipeline running time.
+  // Without this, PTS=0 while running_time has advanced by the collection
+  // duration, causing sync=true sinks to drop every buffer as late.
+  //
+  // We compute: first_timestamp = ros_ts_last - running_time
+  // so that PTS = ros_ts_last - first_timestamp = running_time.
+  // Subsequent frames naturally track: PTS_i = running_time + (ros_ts_i - ros_ts_last).
+  if ( !GST_CLOCK_TIME_IS_VALID( src->priv->first_timestamp ) &&
+       !src->priv->frame_timestamps.empty() ) {
+    GstClock *clock = gst_element_get_clock( GST_ELEMENT( src ) );
+    if ( clock ) {
+      GstClockTime now = gst_clock_get_time( clock );
+      GstClockTime base_time = gst_element_get_base_time( GST_ELEMENT( src ) );
+      gst_object_unref( clock );
+      if ( now >= base_time ) {
+        GstClockTime running_time = now - base_time;
+        src->priv->first_timestamp = src->priv->frame_timestamps.back() - running_time;
+      } else {
+        // Fallback: use the first collected timestamp (PTS won't be perfectly aligned
+        // but avoids underflow).
+        src->priv->first_timestamp = src->priv->frame_timestamps.front();
+      }
+    } else {
+      // No clock available (shouldn't happen for a live source in PLAYING), fall back.
+      src->priv->first_timestamp = src->priv->frame_timestamps.front();
+    }
   }
   src->priv->frame_timestamps.clear();
 
