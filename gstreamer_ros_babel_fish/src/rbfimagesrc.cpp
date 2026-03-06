@@ -149,6 +149,7 @@ static gboolean rbf_image_src_stop( GstBaseSrc *src );
 static gboolean rbf_image_src_unlock( GstBaseSrc *src );
 static gboolean rbf_image_src_unlock_stop( GstBaseSrc *src );
 static GstFlowReturn rbf_image_src_create( GstPushSrc *src, GstBuffer **buffer );
+static gboolean rbf_image_src_negotiate( GstBaseSrc *src );
 static GstCaps *rbf_image_src_get_caps( GstBaseSrc *src, GstCaps *filter );
 static gboolean rbf_image_src_query( GstBaseSrc *src, GstQuery *query );
 
@@ -233,6 +234,7 @@ static void rbf_image_src_class_init( RbfImageSrcClass *klass )
   basesrc_class->stop = GST_DEBUG_FUNCPTR( rbf_image_src_stop );
   basesrc_class->unlock = GST_DEBUG_FUNCPTR( rbf_image_src_unlock );
   basesrc_class->unlock_stop = GST_DEBUG_FUNCPTR( rbf_image_src_unlock_stop );
+  basesrc_class->negotiate = GST_DEBUG_FUNCPTR( rbf_image_src_negotiate );
   basesrc_class->get_caps = GST_DEBUG_FUNCPTR( rbf_image_src_get_caps );
   basesrc_class->query = GST_DEBUG_FUNCPTR( rbf_image_src_query );
 
@@ -641,6 +643,27 @@ static gboolean rbf_image_src_unlock_stop( GstBaseSrc *basesrc )
   return TRUE;
 }
 
+static gboolean rbf_image_src_negotiate( GstBaseSrc *basesrc )
+{
+  RbfImageSrc *src = RBF_IMAGE_SRC( basesrc );
+
+  {
+    std::lock_guard<std::mutex> lock( src->priv->mutex );
+
+    // If framerate is pending auto-determination, defer negotiation.
+    // The first create() call will determine framerate and set caps via
+    // gst_base_src_set_caps(), which triggers proper downstream negotiation.
+    // Without this, negotiate() fixates to framerate=0/1 and the downstream
+    // pipeline rejects the real framerate when it arrives.
+    if ( src->priv->determine_framerate && !src->priv->framerate_determined ) {
+      GST_INFO_OBJECT( src, "Deferring negotiation until framerate is determined" );
+      return TRUE;
+    }
+  }
+
+  return GST_BASE_SRC_CLASS( parent_class )->negotiate( basesrc );
+}
+
 static GstCaps *rbf_image_src_get_caps( GstBaseSrc *basesrc, GstCaps *filter )
 {
   RbfImageSrc *src = RBF_IMAGE_SRC( basesrc );
@@ -652,6 +675,17 @@ static GstCaps *rbf_image_src_get_caps( GstBaseSrc *basesrc, GstCaps *filter )
       caps = gst_caps_ref( src->priv->current_caps );
     } else {
       caps = get_all_supported_caps();
+      // If framerate is already known (explicit config or auto-determined),
+      // include it in the caps so that negotiate() fixates correctly instead
+      // of falling back to 0/1 which locks the downstream pipeline to wrong caps.
+      if ( src->priv->framerate_determined && src->priv->framerate_num > 0 ) {
+        caps = gst_caps_make_writable( caps );
+        for ( guint i = 0; i < gst_caps_get_size( caps ); i++ ) {
+          GstStructure *s = gst_caps_get_structure( caps, i );
+          gst_structure_set( s, "framerate", GST_TYPE_FRACTION, src->priv->framerate_num,
+                             src->priv->framerate_den, nullptr );
+        }
+      }
     }
   }
 
