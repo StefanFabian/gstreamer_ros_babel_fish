@@ -49,44 +49,27 @@ ament_export_dependencies(rclcpp sensor_msgs)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  ament_add_gtest(test_format_conversion test/test_format_conversion.cpp)
-  target_link_libraries(test_format_conversion gstrosbabelfish)
+  function(add_gst_test name source)
+    ament_add_gtest(${name} ${source})
+    if(TARGET ${name})
+      target_link_libraries(${name} gstrosbabelfish)
+      set_tests_properties(${name} PROPERTIES ENVIRONMENT
+                           "GST_PLUGIN_PATH=${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+  endfunction()
 
-  ament_add_gtest(test_gst_to_ros test/test_gst_to_ros.cpp)
-  target_link_libraries(test_gst_to_ros gstrosbabelfish)
-
-  ament_add_gtest(test_ros_to_gst test/test_ros_to_gst.cpp)
-  target_link_libraries(test_ros_to_gst gstrosbabelfish)
-
-  ament_add_gtest(test_timestamp_sync test/test_timestamp_sync.cpp)
-  target_link_libraries(test_timestamp_sync gstrosbabelfish)
-
-  ament_add_gtest(test_validation test/test_validation.cpp)
-  target_link_libraries(test_validation gstrosbabelfish)
-
-  ament_add_gtest(test_shutdown_behavior test/test_shutdown_behavior.cpp)
-  target_link_libraries(test_shutdown_behavior gstrosbabelfish)
-
-  ament_add_gtest(test_subscription_count test/test_subscription_count.cpp)
-  target_link_libraries(test_subscription_count gstrosbabelfish)
-
-  ament_add_gtest(test_rbfimagesrc_standalone
-                  test/test_rbfimagesrc_standalone.cpp)
-  target_link_libraries(test_rbfimagesrc_standalone gstrosbabelfish)
-
-  ament_add_gtest(test_rbfimagesink_standalone
-                  test/test_rbfimagesink_standalone.cpp)
-  target_link_libraries(test_rbfimagesink_standalone gstrosbabelfish)
-
-  ament_add_gtest(test_pts_generation test/test_pts_generation.cpp)
-  target_link_libraries(test_pts_generation gstrosbabelfish)
-
-  ament_add_gtest(test_rbfimagesrc_framerate
-                  test/test_rbfimagesrc_framerate.cpp)
-  target_link_libraries(test_rbfimagesrc_framerate gstrosbabelfish)
-
-  ament_add_gtest(test_nv_formats test/test_nv_formats.cpp)
-  target_link_libraries(test_nv_formats gstrosbabelfish)
+  add_gst_test(test_format_conversion test/test_format_conversion.cpp)
+  add_gst_test(test_gst_to_ros test/test_gst_to_ros.cpp)
+  add_gst_test(test_ros_to_gst test/test_ros_to_gst.cpp)
+  add_gst_test(test_timestamp_sync test/test_timestamp_sync.cpp)
+  add_gst_test(test_validation test/test_validation.cpp)
+  add_gst_test(test_shutdown_behavior test/test_shutdown_behavior.cpp)
+  add_gst_test(test_subscription_count test/test_subscription_count.cpp)
+  add_gst_test(test_rbfimagesrc_standalone test/test_rbfimagesrc_standalone.cpp)
+  add_gst_test(test_rbfimagesink_standalone test/test_rbfimagesink_standalone.cpp)
+  add_gst_test(test_pts_generation test/test_pts_generation.cpp)
+  add_gst_test(test_rbfimagesrc_framerate test/test_rbfimagesrc_framerate.cpp)
+  add_gst_test(test_nv_formats test/test_nv_formats.cpp)
 endif()
 
 # ##############################################################################

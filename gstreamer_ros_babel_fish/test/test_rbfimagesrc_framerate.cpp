@@ -48,6 +48,17 @@ protected:
     node_.reset();
   }
 
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+  }
+
   sensor_msgs::msg::Image::SharedPtr create_test_image( const rclcpp::Time &timestamp )
   {
     auto msg = std::make_shared<sensor_msgs::msg::Image>();
@@ -82,10 +93,11 @@ TEST_F( RbfImageSrcFramerateTest, FramerateProperty )
   ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  ASSERT_NE( sink, nullptr );
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
 
-  // Wait for pipeline to start
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Publish image
   pub->publish( *create_test_image( node_->get_clock()->now() ) );
@@ -94,8 +106,8 @@ TEST_F( RbfImageSrcFramerateTest, FramerateProperty )
   g_signal_emit_by_name( sink, "pull-sample", &sample );
 
   int retries = 0;
-  while ( !sample && retries < 20 ) {
-    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  while ( !sample && retries < 100 ) {
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     g_signal_emit_by_name( sink, "pull-sample", &sample );
     retries++;
   }
@@ -133,8 +145,11 @@ TEST_F( RbfImageSrcFramerateTest, DetermineFramerate )
   ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  ASSERT_NE( sink, nullptr );
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Publish 10 images at 10Hz (100ms interval)
   rclcpp::Time start_time = node_->get_clock()->now();
@@ -186,10 +201,10 @@ TEST_F( RbfImageSrcFramerateTest, DetermineFramerate )
 static GstSample *pull_first_sample( GstElement *sink )
 {
   GstSample *sample = nullptr;
-  for ( int retries = 0; !sample && retries < 30; retries++ ) {
+  for ( int retries = 0; !sample && retries < 100; retries++ ) {
     g_signal_emit_by_name( sink, "pull-sample", &sample );
     if ( !sample )
-      std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
   }
   return sample;
 }
@@ -211,8 +226,11 @@ TEST_F( RbfImageSrcFramerateTest, SnapsToStandardRateWithJitter )
   ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  ASSERT_NE( sink, nullptr );
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Timestamps that yield avg_interval = 33,423,913 ns → fps ≈ 29.919 (0.27% off from 30.0).
   // The computation uses only first and last of wait-frame-count=5 timestamps for the average;
@@ -262,8 +280,11 @@ TEST_F( RbfImageSrcFramerateTest, DetermineFramerateFirstBufferPtsNotZero )
   ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  ASSERT_NE( sink, nullptr );
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Publish wait_frames + 1 images at 10Hz so the determination completes and
   // at least one frame is pushed downstream.
@@ -308,8 +329,11 @@ TEST_F( RbfImageSrcFramerateTest, FallsBackToIntegerForNonStandardRate )
   ASSERT_NE( pipeline_, nullptr ) << ( error ? error->message : "unknown error" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  ASSERT_NE( sink, nullptr );
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // 7fps → interval = 1e9 / 7 = 142,857,142 ns. Not in the standard table → rounds to 7/1.
   // Use 100ms wall-clock sleep to keep the test fast; only header timestamps matter for fps.
