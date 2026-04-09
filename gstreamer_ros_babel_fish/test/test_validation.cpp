@@ -135,5 +135,8 @@ TEST_F( ValidationTest, ImageSinkNodeNameValidation )
 int main( int argc, char **argv )
 {
   testing::InitGoogleTest( &argc, argv );
-  return RUN_ALL_TESTS();
+  rclcpp::init( argc, argv );
+  int ret = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return ret;
 }

@@ -149,7 +149,7 @@ protected:
     return true;
   }
 
-  static GstPadProbeReturn buffer_probe_callback( GstPad * /* pad */, GstPadProbeInfo *info,
+  static GstPadProbeReturn buffer_probe_callback( GstPad *pad, GstPadProbeInfo *info,
                                                   gpointer user_data )
   {
     auto *test = static_cast<RosToGstTest *>( user_data );
@@ -173,10 +173,31 @@ protected:
         if ( ts_meta ) {
           test->last_ref_timestamp_ = ts_meta->timestamp;
         }
+
+        // Capture current format from caps
+        GstCaps *caps = gst_pad_get_current_caps( pad );
+        if ( caps ) {
+          GstStructure *s = gst_caps_get_structure( caps, 0 );
+          const gchar *format = gst_structure_get_string( s, "format" );
+          if ( format ) {
+            std::lock_guard<std::mutex> lock( test->last_format_mutex_ );
+            test->last_format_ = format;
+          }
+          gst_caps_unref( caps );
+        }
       }
     }
 
     return GST_PAD_PROBE_OK;
+  }
+
+  void set_node_property( GstElement *pipeline, const char *name )
+  {
+    GstElement *element = gst_bin_get_by_name( GST_BIN( pipeline ), name );
+    if ( element ) {
+      g_object_set( element, "node", node_.get(), nullptr );
+      gst_object_unref( element );
+    }
   }
 
   rclcpp::Node::SharedPtr node_;
@@ -188,6 +209,9 @@ protected:
   std::atomic<int> buffer_count_{ 0 };
   std::atomic<size_t> last_buffer_size_{ 0 };
   std::atomic<GstClockTime> last_ref_timestamp_{ GST_CLOCK_TIME_NONE };
+
+  std::mutex last_format_mutex_;
+  std::string last_format_;
 };
 
 TEST_F( RosToGstTest, RawImageSubscription )
@@ -200,17 +224,18 @@ TEST_F( RosToGstTest, RawImageSubscription )
   // Create publisher first (so topic exists for detection)
   auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
 
-  std::string pipeline_str = "rbfimagesrc topic=" + topic + " ! fakesink name=sink";
+  std::string pipeline_str = "rbfimagesrc name=src topic=" + topic + " ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
 
+  set_node_property( pipeline_, "src" );
+
   // Add probe to count buffers
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
   ASSERT_NE( sink, nullptr );
-
   GstPad *pad = gst_element_get_static_pad( sink, "sink" );
   ASSERT_NE( pad, nullptr );
 
@@ -248,22 +273,21 @@ TEST_F( RosToGstTest, CompressedJpegSubscription )
   // Create publisher on the same topic
   auto pub = node_->create_publisher<sensor_msgs::msg::CompressedImage>( topic, 10 );
 
-  std::string pipeline_str = "rbfimagesrc topic=" + topic + " ! jpegdec ! fakesink name=sink";
+  std::string pipeline_str =
+      "rbfimagesrc name=src topic=" + topic + " ! jpegdec ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
+  set_node_property( pipeline_, "src" );
 
   // Add probe to count buffers
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
   ASSERT_NE( sink, nullptr );
-
   GstPad *pad = gst_element_get_static_pad( sink, "sink" );
   ASSERT_NE( pad, nullptr );
-
   gst_pad_add_probe( pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe_callback, this, nullptr );
-
   gst_object_unref( pad );
   gst_object_unref( sink );
 
@@ -293,13 +317,13 @@ TEST_F( RosToGstTest, MonochromeImageSubscription )
 
   auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
-
-  std::string pipeline_str = "rbfimagesrc topic=" + topic + " ! fakesink name=sink";
+  std::string pipeline_str = "rbfimagesrc name=src topic=" + topic + " ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
 
   // Add probe
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
@@ -309,7 +333,6 @@ TEST_F( RosToGstTest, MonochromeImageSubscription )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-
   std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
 
   for ( int i = 0; i < num_messages; i++ ) {
@@ -337,11 +360,13 @@ TEST_F( RosToGstTest, QosPropertyBestEffort )
   auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, qos );
 
   std::string pipeline_str =
-      "rbfimagesrc topic=" + topic + " qos-reliability=best-effort ! fakesink name=sink";
+      "rbfimagesrc name=src topic=" + topic + " qos-reliability=best-effort ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
   GstPad *pad = gst_element_get_static_pad( sink, "sink" );
@@ -384,14 +409,17 @@ TEST_F( RosToGstTest, RoundTripRawImage )
         received_count++;
       } );
 
-  std::string pipeline_str = "rbfimagesrc topic=" + input_topic +
+  std::string pipeline_str = "rbfimagesrc name=src topic=" + input_topic +
                              " ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              output_topic;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
+  set_node_property( pipeline_, "sink" );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
@@ -435,13 +463,13 @@ TEST_F( RosToGstTest, RawImageHasReferenceTimestampMeta )
 
   auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
-
-  std::string pipeline_str = "rbfimagesrc topic=" + topic + " ! fakesink name=sink";
+  std::string pipeline_str = "rbfimagesrc name=src topic=" + topic + " ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
   GstPad *pad = gst_element_get_static_pad( sink, "sink" );
@@ -472,13 +500,14 @@ TEST_F( RosToGstTest, CompressedImageHasReferenceTimestampMeta )
 
   auto pub = node_->create_publisher<sensor_msgs::msg::CompressedImage>( topic, 10 );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
-
-  std::string pipeline_str = "rbfimagesrc topic=" + topic + " ! jpegdec ! fakesink name=sink";
+  std::string pipeline_str =
+      "rbfimagesrc name=src topic=" + topic + " ! jpegdec ! fakesink name=sink";
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
 
   GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
   GstPad *pad = gst_element_get_static_pad( sink, "sink" );
@@ -497,17 +526,71 @@ TEST_F( RosToGstTest, CompressedImageHasReferenceTimestampMeta )
 
   ASSERT_TRUE( wait_for_buffers( 1, std::chrono::seconds( 5 ) ) );
 
-  // Note: jpegdec may or may not preserve the reference timestamp meta.
-  // We check that it was at least set by rbfimagesrc (meta may be lost after decode).
-  // If the meta survived jpegdec, verify it matches.
-  if ( last_ref_timestamp_.load() != GST_CLOCK_TIME_NONE ) {
-    GstClockTime expected_ts = static_cast<GstClockTime>( test_time.nanoseconds() );
-    EXPECT_EQ( last_ref_timestamp_.load(), expected_ts );
+  GstClockTime expected_ts = static_cast<GstClockTime>( test_time.nanoseconds() );
+  EXPECT_EQ( last_ref_timestamp_.load(), expected_ts );
+}
+
+TEST_F( RosToGstTest, MidStreamEncodingChange )
+{
+  const std::string topic = "/test_ros_encoding_change";
+  const int width = 320;
+  const int height = 240;
+
+  auto pub = node_->create_publisher<sensor_msgs::msg::Image>( topic, 10 );
+
+  std::string pipeline_str = "rbfimagesrc name=src topic=" + topic + " ! fakesink name=sink";
+
+  GError *error = nullptr;
+  pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
+  ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "src" );
+
+  GstElement *sink = gst_bin_get_by_name( GST_BIN( pipeline_ ), "sink" );
+  GstPad *pad = gst_element_get_static_pad( sink, "sink" );
+  gst_pad_add_probe( pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe_callback, this, nullptr );
+  gst_object_unref( pad );
+  gst_object_unref( sink );
+
+  gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+
+  // 1. Publish RGB8
+  auto msg1 = create_test_image( width, height, enc::RGB8 );
+  pub->publish( *msg1 );
+  ASSERT_TRUE( wait_for_buffers( 1, std::chrono::seconds( 5 ) ) );
+  EXPECT_EQ( last_buffer_size_, (size_t)( width * height * 3 ) );
+  {
+    std::lock_guard<std::mutex> lock( last_format_mutex_ );
+    EXPECT_EQ( last_format_, "RGB" );
+  }
+
+  // 2. Publish MONO8
+  auto msg2 = create_test_image( width, height, enc::MONO8 );
+  pub->publish( *msg2 );
+  ASSERT_TRUE( wait_for_buffers( 2, std::chrono::seconds( 5 ) ) );
+  EXPECT_EQ( last_buffer_size_, (size_t)( width * height ) );
+  {
+    std::lock_guard<std::mutex> lock( last_format_mutex_ );
+    EXPECT_EQ( last_format_, "GRAY8" );
+  }
+
+  // 3. Publish BGR8
+  auto msg3 = create_test_image( width, height, enc::BGR8 );
+  pub->publish( *msg3 );
+  ASSERT_TRUE( wait_for_buffers( 3, std::chrono::seconds( 5 ) ) );
+  EXPECT_EQ( last_buffer_size_, (size_t)( width * height * 3 ) );
+  {
+    std::lock_guard<std::mutex> lock( last_format_mutex_ );
+    EXPECT_EQ( last_format_, "BGR" );
   }
 }
 
 int main( int argc, char **argv )
 {
   testing::InitGoogleTest( &argc, argv );
-  return RUN_ALL_TESTS();
+  rclcpp::init( argc, argv );
+  int ret = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return ret;
 }

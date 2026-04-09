@@ -68,6 +68,15 @@ protected:
     return true;
   }
 
+  void set_node_property( GstElement *pipeline, const char *name )
+  {
+    GstElement *element = gst_bin_get_by_name( GST_BIN( pipeline ), name );
+    if ( element ) {
+      g_object_set( element, "node", node_.get(), nullptr );
+      gst_object_unref( element );
+    }
+  }
+
   rclcpp::Node::SharedPtr node_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
   std::thread spin_thread_;
@@ -96,7 +105,7 @@ TEST_F( GstToRosTest, RawImagePublishing )
         received_count_++;
       } );
 
-  // Give subscriber time to be discovered
+  // Give subscriber time to be discovered (should be fast with shared node)
   std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
 
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
@@ -104,13 +113,15 @@ TEST_F( GstToRosTest, RawImagePublishing )
                              "video/x-raw,format=RGB,width=" +
                              std::to_string( width ) + ",height=" + std::to_string( height ) +
                              ",framerate=30/1 ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              topic;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
+
+  set_node_property( pipeline_, "sink" );
 
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
@@ -179,13 +190,15 @@ TEST_F( GstToRosTest, CompressedJpegPublishing )
                              std::to_string( width ) + ",height=" + std::to_string( height ) +
                              ",framerate=30/1 ! "
                              "videoconvert ! jpegenc ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              topic;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
+
+  set_node_property( pipeline_, "sink" );
 
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
@@ -248,13 +261,15 @@ TEST_F( GstToRosTest, CompressedPngPublishing )
                              std::to_string( width ) + ",height=" + std::to_string( height ) +
                              ",framerate=10/1 ! "
                              "videoconvert ! pngenc ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              topic;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
+
+  set_node_property( pipeline_, "sink" );
 
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
@@ -321,13 +336,15 @@ TEST_F( GstToRosTest, MonochromeImagePublishing )
                              "video/x-raw,format=GRAY8,width=" +
                              std::to_string( width ) + ",height=" + std::to_string( height ) +
                              ",framerate=30/1 ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              topic;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr ) << "Failed to create pipeline: "
                                   << ( error ? error->message : "unknown error" );
+
+  set_node_property( pipeline_, "sink" );
 
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
@@ -379,12 +396,14 @@ TEST_F( GstToRosTest, FrameIdProperty )
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
                              " ! "
                              "video/x-raw,format=RGB,width=320,height=240,framerate=30/1 ! "
-                             "rbfimagesink topic=" +
+                             "rbfimagesink name=sink topic=" +
                              topic + " frame-id=" + frame_id;
 
   GError *error = nullptr;
   pipeline_ = gst_parse_launch( pipeline_str.c_str(), &error );
   ASSERT_NE( pipeline_, nullptr );
+
+  set_node_property( pipeline_, "sink" );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
 
@@ -412,5 +431,8 @@ TEST_F( GstToRosTest, FrameIdProperty )
 int main( int argc, char **argv )
 {
   testing::InitGoogleTest( &argc, argv );
-  return RUN_ALL_TESTS();
+  rclcpp::init( argc, argv );
+  int ret = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return ret;
 }

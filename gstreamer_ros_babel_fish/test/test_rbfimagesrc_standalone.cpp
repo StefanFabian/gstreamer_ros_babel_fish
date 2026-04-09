@@ -77,3 +77,13 @@ TEST_F( RbfImageSrcStandaloneTest, PipelineStartup )
   // If we got here, no error occurred in the first second.
   // Success!
 }
+
+int main( int argc, char **argv )
+{
+  testing::InitGoogleTest( &argc, argv );
+  // Plugin handles its own rclcpp if needed
+  int ret = RUN_ALL_TESTS();
+  if ( rclcpp::ok() )
+    rclcpp::shutdown();
+  return ret;
+}

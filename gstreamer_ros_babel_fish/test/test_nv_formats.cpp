@@ -101,3 +101,12 @@ TEST_F( RbfImageSinkNVTest, EnableNVFormatsAcceptsNV21 )
 
   gst_object_unref( bus );
 }
+
+int main( int argc, char **argv )
+{
+  testing::InitGoogleTest( &argc, argv );
+  rclcpp::init( argc, argv );
+  int ret = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return ret;
+}

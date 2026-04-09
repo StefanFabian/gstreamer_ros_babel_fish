@@ -69,3 +69,12 @@ TEST_F( RbfImageSinkStandaloneTest, PipelineStartup )
 
   gst_object_unref( bus );
 }
+
+int main( int argc, char **argv )
+{
+  testing::InitGoogleTest( &argc, argv );
+  int ret = RUN_ALL_TESTS();
+  if ( rclcpp::ok() )
+    rclcpp::shutdown();
+  return ret;
+}

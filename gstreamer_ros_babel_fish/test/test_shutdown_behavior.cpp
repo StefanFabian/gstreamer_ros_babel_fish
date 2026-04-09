@@ -136,7 +136,13 @@ TEST_F( ShutdownBehaviorTest, SrcTopicDisappears )
   // Wait for it to reach playing
   GstState state;
   GstStateChangeReturn ret = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
-  ASSERT_EQ( ret, GST_STATE_CHANGE_SUCCESS );
+  // It might return ASYNC if it's still waiting for discovery or the first buffer
+  // but we wait up to 5s which should be enough.
+  ASSERT_TRUE( ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_ASYNC );
+  if ( ret == GST_STATE_CHANGE_ASYNC ) {
+    ret = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+    ASSERT_EQ( ret, GST_STATE_CHANGE_SUCCESS );
+  }
   ASSERT_EQ( state, GST_STATE_PLAYING );
 
   std::this_thread::sleep_for( std::chrono::seconds( 1 ) );
@@ -256,4 +262,13 @@ TEST_F( ShutdownBehaviorTest, SinkRosShutdown )
   ret = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
   EXPECT_EQ( ret, GST_STATE_CHANGE_SUCCESS );
   EXPECT_EQ( state, GST_STATE_NULL );
+}
+
+int main( int argc, char **argv )
+{
+  testing::InitGoogleTest( &argc, argv );
+  rclcpp::init( argc, argv );
+  int ret = RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return ret;
 }
