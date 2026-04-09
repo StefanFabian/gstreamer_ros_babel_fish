@@ -56,6 +56,17 @@ protected:
     node_.reset();
   }
 
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+  }
+
   sensor_msgs::msg::Image::SharedPtr create_test_image( const rclcpp::Time &timestamp )
   {
     auto msg = std::make_shared<sensor_msgs::msg::Image>();
@@ -95,8 +106,8 @@ TEST_F( PtsGenerationTest, ZeroBasedPtsLogic )
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
 
-  // Wait for pipeline to be ready
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // 1. Publish FIRST image
   // Use current time to simulate real usage
@@ -109,7 +120,7 @@ TEST_F( PtsGenerationTest, ZeroBasedPtsLogic )
 
   // Retry a few times if not immediately available (ros propagation delay)
   int retries = 0;
-  while ( !sample1 && retries < 20 ) {
+  while ( !sample1 && retries < 100 ) {
     std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     g_signal_emit_by_name( sink, "pull-sample", &sample1 );
     retries++;
@@ -141,8 +152,8 @@ TEST_F( PtsGenerationTest, ZeroBasedPtsLogic )
   g_signal_emit_by_name( sink, "pull-sample", &sample2 );
 
   retries = 0;
-  while ( !sample2 && retries < 20 ) {
-    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  while ( !sample2 && retries < 100 ) {
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     g_signal_emit_by_name( sink, "pull-sample", &sample2 );
     retries++;
   }
@@ -189,7 +200,8 @@ TEST_F( PtsGenerationTest, CompressedZeroBasedPtsLogic )
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // 1. Publish FIRST compressed image
   rclcpp::Time t1 = node_->get_clock()->now();
@@ -204,8 +216,8 @@ TEST_F( PtsGenerationTest, CompressedZeroBasedPtsLogic )
   g_signal_emit_by_name( sink, "pull-sample", &sample1 );
 
   int retries = 0;
-  while ( !sample1 && retries < 20 ) {
-    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  while ( !sample1 && retries < 100 ) {
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     g_signal_emit_by_name( sink, "pull-sample", &sample1 );
     retries++;
   }
@@ -237,8 +249,8 @@ TEST_F( PtsGenerationTest, CompressedZeroBasedPtsLogic )
   g_signal_emit_by_name( sink, "pull-sample", &sample2 );
 
   retries = 0;
-  while ( !sample2 && retries < 20 ) {
-    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  while ( !sample2 && retries < 100 ) {
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     g_signal_emit_by_name( sink, "pull-sample", &sample2 );
     retries++;
   }

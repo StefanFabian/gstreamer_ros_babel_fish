@@ -28,21 +28,20 @@ protected:
     }
 
     node_ = std::make_shared<rclcpp::Node>( "ros_to_gst_test_node" );
-    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    // Use multi-threaded executor for more robust discovery processing
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node( node_ );
 
     // Start spinning in background
-    spin_thread_ = std::thread( [this]() {
-      while ( rclcpp::ok() && spinning_ ) {
-        executor_->spin_some( std::chrono::milliseconds( 10 ) );
-        std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
-      }
-    } );
+    spin_thread_ = std::thread( [this]() { executor_->spin(); } );
   }
 
   void TearDown() override
   {
     spinning_ = false;
+    if ( executor_ ) {
+      executor_->cancel();
+    }
     if ( spin_thread_.joinable() ) {
       spin_thread_.join();
     }
@@ -58,8 +57,35 @@ protected:
     node_.reset();
   }
 
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+    RCLCPP_WARN( node_->get_logger(), "Discovery timeout for publisher on topic %s",
+                 pub->get_topic_name() );
+  }
+
+  void wait_for_discovery( rclcpp::SubscriptionBase::SharedPtr sub, int expected_publishers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( sub->get_publisher_count() >= (size_t)expected_publishers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+    RCLCPP_WARN( node_->get_logger(), "Discovery timeout for subscriber on topic %s",
+                 sub->get_topic_name() );
+  }
+
   sensor_msgs::msg::Image::SharedPtr create_test_image( uint32_t width, uint32_t height,
                                                         const std::string &encoding )
+
   {
     auto msg = std::make_shared<sensor_msgs::msg::Image>();
     msg->header.stamp = node_->get_clock()->now();
@@ -201,8 +227,9 @@ protected:
   }
 
   rclcpp::Node::SharedPtr node_;
-  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  rclcpp::executors::MultiThreadedExecutor::SharedPtr executor_;
   std::thread spin_thread_;
+
   std::atomic<bool> spinning_{ true };
 
   GstElement *pipeline_ = nullptr;
@@ -248,8 +275,8 @@ TEST_F( RosToGstTest, RawImageSubscription )
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
 
-  // Wait for pipeline to be ready
-  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   for ( int i = 0; i < num_messages; i++ ) {
     auto msg = create_test_image( width, height, enc::RGB8 );
@@ -295,8 +322,8 @@ TEST_F( RosToGstTest, CompressedJpegSubscription )
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
 
-  // Wait for pipeline to be ready
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   for ( int i = 0; i < num_messages; i++ ) {
     auto msg = create_test_compressed_image( "jpeg" );
@@ -333,7 +360,9 @@ TEST_F( RosToGstTest, MonochromeImageSubscription )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   for ( int i = 0; i < num_messages; i++ ) {
     auto msg = create_test_image( width, height, enc::MONO8 );
@@ -375,7 +404,9 @@ TEST_F( RosToGstTest, QosPropertyBestEffort )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   for ( int i = 0; i < num_messages; i++ ) {
     auto msg = create_test_image( width, height, enc::RGB8 );
@@ -422,7 +453,10 @@ TEST_F( RosToGstTest, RoundTripRawImage )
   set_node_property( pipeline_, "sink" );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
+  wait_for_discovery( sub );
 
   // Publish messages
   auto original_msg = create_test_image( width, height, enc::RGB8 );
@@ -478,7 +512,9 @@ TEST_F( RosToGstTest, RawImageHasReferenceTimestampMeta )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Publish with a known timestamp
   auto msg = create_test_image( width, height, enc::RGB8 );
@@ -516,7 +552,9 @@ TEST_F( RosToGstTest, CompressedImageHasReferenceTimestampMeta )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // Publish with a known timestamp
   auto msg = create_test_compressed_image( "jpeg" );
@@ -553,7 +591,9 @@ TEST_F( RosToGstTest, MidStreamEncodingChange )
   gst_object_unref( sink );
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
-  std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+
+  // Wait for discovery
+  wait_for_discovery( pub );
 
   // 1. Publish RGB8
   auto msg1 = create_test_image( width, height, enc::RGB8 );

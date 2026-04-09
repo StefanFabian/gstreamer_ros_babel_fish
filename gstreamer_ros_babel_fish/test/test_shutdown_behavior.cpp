@@ -74,6 +74,17 @@ protected:
     return msg;
   }
 
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+  }
+
   rclcpp::Node::SharedPtr node_;
   rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
   std::thread spin_thread_;
@@ -126,10 +137,13 @@ TEST_F( ShutdownBehaviorTest, SrcTopicDisappears )
     GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
     ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE );
 
+    // Wait for discovery to ensure messages reach the element
+    wait_for_discovery( pub );
+
     auto msg = create_test_image( 640, 480 );
     for ( int i = 0; i < 3; ++i ) {
       pub->publish( *msg );
-      std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
     }
   }
 
@@ -199,15 +213,23 @@ TEST_F( ShutdownBehaviorTest, RosShutdown )
 
   gst_element_set_state( pipeline_, GST_STATE_PLAYING );
 
+  // Wait for discovery and push some data to move to PLAYING
+  wait_for_discovery( pub );
+
   auto msg = create_test_image( 320, 240 );
   for ( int i = 0; i < 5; ++i ) {
     pub->publish( *msg );
-    std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+    std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
   }
 
   // Wait for playing
   GstState state;
-  gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+  GstStateChangeReturn ret_state =
+      gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+  // If it's ASYNC, wait again
+  if ( ret_state == GST_STATE_CHANGE_ASYNC ) {
+    ret_state = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+  }
   ASSERT_EQ( state, GST_STATE_PLAYING );
 
   pub->publish( *msg );

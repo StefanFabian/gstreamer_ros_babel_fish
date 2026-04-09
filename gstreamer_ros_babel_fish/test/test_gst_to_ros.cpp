@@ -26,21 +26,19 @@ protected:
     }
 
     node_ = std::make_shared<rclcpp::Node>( "gst_to_ros_test_node" );
-    executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node( node_ );
 
     // Start spinning in background
-    spin_thread_ = std::thread( [this]() {
-      while ( rclcpp::ok() && spinning_ ) {
-        executor_->spin_some( std::chrono::milliseconds( 10 ) );
-        std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
-      }
-    } );
+    spin_thread_ = std::thread( [this]() { executor_->spin(); } );
   }
 
   void TearDown() override
   {
     spinning_ = false;
+    if ( executor_ ) {
+      executor_->cancel();
+    }
     if ( spin_thread_.joinable() ) {
       spin_thread_.join();
     }
@@ -54,6 +52,32 @@ protected:
     executor_->remove_node( node_ );
     executor_.reset();
     node_.reset();
+  }
+
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+    RCLCPP_WARN( node_->get_logger(), "Discovery timeout for publisher on topic %s",
+                 pub->get_topic_name() );
+  }
+
+  void wait_for_discovery( rclcpp::SubscriptionBase::SharedPtr sub, int expected_publishers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( sub->get_publisher_count() >= (size_t)expected_publishers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 1 ) );
+    }
+    RCLCPP_WARN( node_->get_logger(), "Discovery timeout for subscriber on topic %s",
+                 sub->get_topic_name() );
   }
 
   bool wait_for_messages( int count, std::chrono::milliseconds timeout )
@@ -78,8 +102,9 @@ protected:
   }
 
   rclcpp::Node::SharedPtr node_;
-  rclcpp::executors::SingleThreadedExecutor::SharedPtr executor_;
+  rclcpp::executors::MultiThreadedExecutor::SharedPtr executor_;
   std::thread spin_thread_;
+
   std::atomic<bool> spinning_{ true };
 
   GstElement *pipeline_ = nullptr;
@@ -105,9 +130,6 @@ TEST_F( GstToRosTest, RawImagePublishing )
         received_count_++;
       } );
 
-  // Give subscriber time to be discovered (should be fast with shared node)
-  std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
-
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
                              " ! "
                              "video/x-raw,format=RGB,width=" +
@@ -127,8 +149,14 @@ TEST_F( GstToRosTest, RawImagePublishing )
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
 
+  // Wait for discovery
+  wait_for_discovery( sub );
+
   GstState state;
   ret = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+  if ( ret == GST_STATE_CHANGE_ASYNC ) {
+    ret = gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
+  }
   ASSERT_EQ( ret, GST_STATE_CHANGE_SUCCESS );
   ASSERT_EQ( state, GST_STATE_PLAYING );
 
@@ -181,9 +209,6 @@ TEST_F( GstToRosTest, CompressedJpegPublishing )
         received_count_++;
       } );
 
-  // Give subscriber time to be discovered
-  std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
-
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
                              " ! "
                              "video/x-raw,width=" +
@@ -203,6 +228,9 @@ TEST_F( GstToRosTest, CompressedJpegPublishing )
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
+
+  // Wait for discovery
+  wait_for_discovery( sub );
 
   // Wait for messages
   ASSERT_TRUE( wait_for_messages( num_frames, std::chrono::seconds( 5 ) ) )
@@ -275,6 +303,9 @@ TEST_F( GstToRosTest, CompressedPngPublishing )
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
 
+  // Wait for discovery
+  wait_for_discovery( sub );
+
   // Wait for messages (longer timeout for PNG)
   ASSERT_TRUE( wait_for_messages( num_frames, std::chrono::seconds( 10 ) ) )
       << "Timeout waiting for messages. Received: " << received_count_;
@@ -328,9 +359,6 @@ TEST_F( GstToRosTest, MonochromeImagePublishing )
         received_count_++;
       } );
 
-  // Give subscriber time to be discovered
-  std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
-
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
                              " ! "
                              "video/x-raw,format=GRAY8,width=" +
@@ -349,6 +377,9 @@ TEST_F( GstToRosTest, MonochromeImagePublishing )
   // Start pipeline
   GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
   ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
+
+  // Wait for discovery
+  wait_for_discovery( sub );
 
   // Wait for messages
   ASSERT_TRUE( wait_for_messages( num_frames, std::chrono::seconds( 5 ) ) )
@@ -390,9 +421,6 @@ TEST_F( GstToRosTest, FrameIdProperty )
         received_count_++;
       } );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
-
-  // Create pipeline with frame-id property
   std::string pipeline_str = "videotestsrc num-buffers=" + std::to_string( num_frames ) +
                              " ! "
                              "video/x-raw,format=RGB,width=320,height=240,framerate=30/1 ! "
@@ -405,13 +433,20 @@ TEST_F( GstToRosTest, FrameIdProperty )
 
   set_node_property( pipeline_, "sink" );
 
-  gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  // Start pipeline
+  GstStateChangeReturn ret = gst_element_set_state( pipeline_, GST_STATE_PLAYING );
+  ASSERT_NE( ret, GST_STATE_CHANGE_FAILURE ) << "Failed to start pipeline";
+
+  // Wait for discovery
+  wait_for_discovery( sub );
 
   GstState state;
   gst_element_get_state( pipeline_, &state, nullptr, 5 * GST_SECOND );
   ASSERT_EQ( state, GST_STATE_PLAYING );
 
-  ASSERT_TRUE( wait_for_messages( num_frames, std::chrono::seconds( 5 ) ) );
+  // Wait for messages
+  ASSERT_TRUE( wait_for_messages( num_frames, std::chrono::seconds( 10 ) ) )
+      << "Timeout waiting for messages. Received: " << received_count_;
 
   {
     std::lock_guard<std::mutex> lock( last_msg_mutex_ );

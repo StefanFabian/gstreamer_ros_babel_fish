@@ -54,6 +54,28 @@ protected:
     node_.reset();
   }
 
+  void wait_for_discovery( rclcpp::PublisherBase::SharedPtr pub, int expected_subscribers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( pub->get_subscription_count() >= (size_t)expected_subscribers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+  }
+
+  void wait_for_discovery( rclcpp::SubscriptionBase::SharedPtr sub, int expected_publishers = 1,
+                           int timeout_ms = 10000 )
+  {
+    auto start = std::chrono::steady_clock::now();
+    while ( std::chrono::steady_clock::now() - start < std::chrono::milliseconds( timeout_ms ) ) {
+      if ( sub->get_publisher_count() >= (size_t)expected_publishers )
+        return;
+      std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+    }
+  }
+
   sensor_msgs::msg::Image::SharedPtr create_test_image( const rclcpp::Time &timestamp )
   {
     auto msg = std::make_shared<sensor_msgs::msg::Image>();
@@ -106,15 +128,16 @@ TEST_F( TimestampSyncTest, PassThroughTimestampPreservation )
   // Choose a specific timestamp (not necessarily now)
   rclcpp::Time test_time( 1600000000, 123456789 );
 
-  // Wait for pipeline to be ready
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
+  wait_for_discovery( sub );
 
   pub->publish( *create_test_image( test_time ) );
 
   // Wait for message
   auto start = std::chrono::steady_clock::now();
   while ( !received ) {
-    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 5 ) ) {
+    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 10 ) ) {
       break;
     }
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
@@ -261,13 +284,15 @@ TEST_F( TimestampSyncTest, JpegEncodedTimestampPreservation )
 
   rclcpp::Time test_time( 1700000000, 987654321 );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
+  wait_for_discovery( sub );
 
   pub->publish( *create_test_image( test_time ) );
 
   auto start = std::chrono::steady_clock::now();
   while ( !received ) {
-    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 5 ) ) {
+    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 10 ) ) {
       break;
     }
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
@@ -322,13 +347,15 @@ TEST_F( TimestampSyncTest, FutureTimestampPreservation )
   int64_t future_ns = 1900000000LL * 1000000000LL;
   rclcpp::Time test_time( future_ns );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
+  wait_for_discovery( sub );
 
   pub->publish( *create_test_image( test_time ) );
 
   auto start = std::chrono::steady_clock::now();
   while ( !received ) {
-    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 5 ) ) {
+    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 10 ) ) {
       break;
     }
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
@@ -381,13 +408,15 @@ TEST_F( TimestampSyncTest, PastTimestampPreservation )
   // Past timestamp (Year 2000)
   rclcpp::Time test_time( 946684800, 0 );
 
-  std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+  // Wait for discovery
+  wait_for_discovery( pub );
+  wait_for_discovery( sub );
 
   pub->publish( *create_test_image( test_time ) );
 
   auto start = std::chrono::steady_clock::now();
   while ( !received ) {
-    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 5 ) ) {
+    if ( std::chrono::steady_clock::now() - start > std::chrono::seconds( 10 ) ) {
       break;
     }
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
