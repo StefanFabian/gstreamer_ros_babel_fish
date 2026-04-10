@@ -1,8 +1,13 @@
+[![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=StefanFabian_gstreamer_ros_babel_fish&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=StefanFabian_gstreamer_ros_babel_fish)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=StefanFabian_gstreamer_ros_babel_fish&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=StefanFabian_gstreamer_ros_babel_fish)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=StefanFabian_gstreamer_ros_babel_fish&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=StefanFabian_gstreamer_ros_babel_fish)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=StefanFabian_gstreamer_ros_babel_fish&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=StefanFabian_gstreamer_ros_babel_fish)
+
 # GStreamer ROS 2 Babel Fish
 
-[![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-
-This project provides GStreamer elements for bridging ROS 2 image topics with GStreamer pipelines. It allows for high-performance streaming of image data between ROS 2 and GStreamer, supporting both raw and compressed image formats.
+This project provides GStreamer elements for bridging ROS 2 image topics with GStreamer pipelines.
+It allows for high-performance streaming of image data between ROS 2 and GStreamer, supporting both raw and compressed image formats.
 
 For a detailed understanding of the system's design and component interactions, please refer to the [Architecture Overview](architecture.md).
 
@@ -13,9 +18,12 @@ For a detailed understanding of the system's design and component interactions, 
     - Automatically handles format conversion.
     - Configurable QoS settings.
 - **rbfimagesink**: GStreamer sink element that publishes to ROS 2 image topics.
-    - Supports publishing `sensor_msgs/msg/Image` (raw).
-    - Supports publishing `sensor_msgs/msg/CompressedImage` (e.g., JPEG, PNG) if input caps match.
+    - Automatically determines whether to publish `sensor_msgs/msg/Image` (raw) or `sensor_msgs/msg/CompressedImage` (e.g., JPEG, PNG) based on the input caps.
     - Zero-copy publishing where possible (using shared memory / loaned messages if supported).
+
+> [!NOTE]
+> Both elements use `GstReferenceTimestampMeta` with `timestamp/x-unix` to attach and recover the timestamp of the ROS image,
+> enabling the processing of image buffers without losing time information (as long as all processing elements preserve it).
 
 ## Installation
 
@@ -51,7 +59,7 @@ This package is a ROS 2 package. You can build it using `colcon`.
 
 ## Usage
 
-After sourcing the workspace, the GStreamer elements `rbfimagesrc` and `rbfimagesink` should be available. You can verify this with:
+After sourcing the workspace again, the GStreamer elements `rbfimagesrc` and `rbfimagesink` should be available. You can verify this with:
 
 ```bash
 gst-inspect-1.0 rbfimagesrc
@@ -106,6 +114,19 @@ gst-launch-1.0 rbfimagesrc determine-framerate=true topic=/compressed_video/comp
 > [!NOTE]
 > `rbfimagesrc` automatically detects if the topic is compressed or raw.
 
+#### 6. Stream camera
+
+Stream a V4L2 compatible USB or MIPI-CSI camera.
+
+```bash
+gst-launch-1.0 v4l2src ! rbfimagesink topic=/camera/image_raw
+```
+
+> [!NOTE]
+> On my laptop, this automatically chooses the webcam with the highest resolution as jpeg stream
+> and publishes the jpeg stream directly as `/camera/image_raw/compressed` resulting in sub-ms latency.  
+> For information on how to configure v4l2src to use a different device, use `gst-inspect-1.0 v4l2src`.
+
 ## Configuration
 
 ### rbfimagesrc Properties
@@ -126,8 +147,8 @@ gst-launch-1.0 rbfimagesrc determine-framerate=true topic=/compressed_video/comp
 - `node`: (Pointer) External `rclcpp::Node` pointer (optional)
 - `node-name`: Name of the internal node if no external node is provided (default: `rbfimagesink`)
 - `frame-id`: `frame_id` to set in the ROS message header
-- `prefer-compressed`: Whether to prefer compressed formats during negotiation (default: `true`)
-- `subscription-count`: Number of current subscriptions to the topic
+- `prefer-compressed`: Whether to prefer compressed formats during negotiation if both available (default: `true`)
+- `subscription-count`: Number of current subscriptions to the topic (read-only)
 - `enable-nv-formats`: Enable NV formats (NV21, NV24) (default: `false`)
 
 ## License
