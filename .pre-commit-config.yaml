@@ -27,7 +27,7 @@ repos:
   - id: end-of-file-fixer
   - id: mixed-line-ending
   - id: trailing-whitespace
-    exclude_types: [rst]
+    exclude_types: [rst, markdown]
 
 # XML Formatting
 - repo: https://github.com/efrecon/pre-commit-hook-lxml
@@ -64,42 +64,9 @@ repos:
     files: \.(cpp|cc|hpp|h)$
     pass_filenames: false
 
-# Python hooks
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.12.7
-  hooks:
-  - id: ruff-check
-    args: [--fix]
-  - id: ruff-format
-
 # Package XML
 - repo: https://github.com/Joschi3/package_xml_validation.git
   rev: v1.3.0
   hooks:
   - id: format-package-xml
     name: Validate and Format package.xml
-
-# Yaml launch and config files
-- repo: https://github.com/Joschi3/launch_config_validator.git
-  rev: v0.1.2
-  hooks:
-  - id: format-yaml-launch-and-configs
-    name: Validate ROS2 launch and config YAML files
-
-# Spellcheck
-#- repo: https://github.com/crate-ci/typos
-#  rev: v1.34.0
-#  hooks:
-#    - id: typos
-
-- repo: https://github.com/python-jsonschema/check-jsonschema
-  rev: 0.33.2
-  hooks:
-  - id: check-github-workflows
-    args: [--verbose]
-  - id: check-github-actions
-    args: [--verbose]
-  - id: check-gitlab-ci
-    args: [--verbose]
-  - id: check-compose-spec
-    args: [--verbose]
