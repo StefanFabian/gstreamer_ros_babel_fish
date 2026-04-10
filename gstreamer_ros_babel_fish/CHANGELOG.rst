@@ -2,8 +2,8 @@
 Changelog for package gstreamer_ros_babel_fish
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.26.40 (2026-04-10)
+--------------------
 * Use framerate in caps if known.
 * Round in framerate determination and improve PTS robustness.
   This avoids exotic framerates that are incompatible with most pipeline elements.

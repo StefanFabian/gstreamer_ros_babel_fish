@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>gstreamer_ros_babel_fish</name>
-  <version>0.1.0</version>
+  <version>1.26.40</version>
   <description>GStreamer elements for bidirectional ROS 2 image streaming</description>
   <maintainer email="gstreamer_ros_babel_fish@stefanfabian.com">Stefan Fabian</maintainer>
   <license>AGPL-3.0-only</license>
