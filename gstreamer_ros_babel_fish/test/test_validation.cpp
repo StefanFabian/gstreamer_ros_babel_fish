@@ -132,6 +132,24 @@ TEST_F( ValidationTest, ImageSinkNodeNameValidation )
   gst_object_unref( element );
 }
 
+TEST_F( ValidationTest, ImageSinkCameraInfoUrlProperty )
+{
+  GstElement *element = gst_element_factory_make( "rbfimagesink", "sink" );
+  ASSERT_NE( element, nullptr );
+
+  gchar *camera_info_url = nullptr;
+  g_object_get( element, "camera-info-url", &camera_info_url, nullptr );
+  EXPECT_STREQ( camera_info_url, "" );
+  g_free( camera_info_url );
+
+  g_object_set( element, "camera-info-url", "file:///tmp/camera.yaml", nullptr );
+  g_object_get( element, "camera-info-url", &camera_info_url, nullptr );
+  EXPECT_STREQ( camera_info_url, "file:///tmp/camera.yaml" );
+  g_free( camera_info_url );
+
+  gst_object_unref( element );
+}
+
 int main( int argc, char **argv )
 {
   testing::InitGoogleTest( &argc, argv );

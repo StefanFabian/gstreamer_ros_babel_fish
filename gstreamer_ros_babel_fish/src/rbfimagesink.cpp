@@ -18,11 +18,15 @@
 #include "gstreamer_ros_babel_fish/format_conversion.hpp"
 #include "gstreamer_ros_babel_fish/ros_node_interface.hpp"
 
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <camera_calibration_parsers/parse.hpp>
 #include <rcl/validate_topic_name.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rmw/validate_node_name.h>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/srv/set_camera_info.hpp>
 
 #include <chrono>
 #include <memory>
@@ -41,6 +45,7 @@ enum {
   PROP_NODE,
   PROP_NODE_NAME,
   PROP_FRAME_ID,
+  PROP_CAMERA_INFO_URL,
   PROP_PREFER_COMPRESSED,
   PROP_SUBSCRIPTION_COUNT,
   PROP_ENABLE_NV_FORMATS,
@@ -52,6 +57,7 @@ struct _RbfImageSinkPrivate {
   gchar *topic;
   gchar *node_name;
   gchar *frame_id;
+  gchar *camera_info_url;
   gpointer external_node; // rclcpp::Node*
   gboolean prefer_compressed;
   gboolean enable_nv_formats;
@@ -60,12 +66,21 @@ struct _RbfImageSinkPrivate {
   std::unique_ptr<RosNodeInterface> ros_interface;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub;
+  rclcpp::Service<sensor_msgs::srv::SetCameraInfo>::SharedPtr set_camera_info_service;
 
   // State
   gboolean is_compressed;
   std::string compression_format;
   GstVideoInfo video_info;
   gboolean video_info_valid;
+  uint32_t compressed_width;
+  uint32_t compressed_height;
+  gboolean camera_info_loaded;
+  sensor_msgs::msg::CameraInfo camera_info;
+  std::string camera_info_path;
+  std::string camera_name;
+  gboolean camera_info_resolution_mismatch;
 
   std::mutex mutex;
 };
@@ -84,6 +99,8 @@ static gboolean rbf_image_sink_stop( GstBaseSink *sink );
 static gboolean rbf_image_sink_set_caps( GstBaseSink *sink, GstCaps *caps );
 static GstFlowReturn rbf_image_sink_render( GstBaseSink *sink, GstBuffer *buffer );
 static GstCaps *rbf_image_sink_get_caps( GstBaseSink *sink, GstCaps *filter );
+static rclcpp::QoS make_default_qos();
+static void rbf_image_sink_setup_camera_info( RbfImageSink *sink, rclcpp::Node::SharedPtr node );
 
 static void rbf_image_sink_class_init( RbfImageSinkClass *klass )
 {
@@ -120,6 +137,14 @@ static void rbf_image_sink_class_init( RbfImageSinkClass *klass )
       gobject_class, PROP_FRAME_ID,
       g_param_spec_string( "frame-id", "Frame ID", "frame_id for ROS header", "",
                            (GParamFlags)( G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS ) ) );
+
+  g_object_class_install_property(
+      gobject_class, PROP_CAMERA_INFO_URL,
+      g_param_spec_string(
+          "camera-info-url", "Camera Info URL",
+          "file:// or package:// URL for camera calibration data. The camera info can be updated "
+          "using set_camera_info service. Changes are written back to the given file if possible.",
+          "", (GParamFlags)( G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS ) ) );
 
   g_object_class_install_property(
       gobject_class, PROP_PREFER_COMPRESSED,
@@ -168,11 +193,16 @@ static void rbf_image_sink_init( RbfImageSink *sink )
   sink->priv->topic = g_strdup( "/image" );
   sink->priv->node_name = g_strdup( "rbfimagesink" );
   sink->priv->frame_id = g_strdup( "" );
+  sink->priv->camera_info_url = g_strdup( "" );
   sink->priv->external_node = nullptr;
   sink->priv->prefer_compressed = TRUE;
   sink->priv->enable_nv_formats = FALSE;
   sink->priv->is_compressed = FALSE;
   sink->priv->video_info_valid = FALSE;
+  sink->priv->compressed_width = 0;
+  sink->priv->compressed_height = 0;
+  sink->priv->camera_info_loaded = FALSE;
+  sink->priv->camera_info_resolution_mismatch = FALSE;
 
   // Disable synchronization by default for real-time streaming
   gst_base_sink_set_sync( GST_BASE_SINK( sink ), FALSE );
@@ -185,6 +215,7 @@ static void rbf_image_sink_finalize( GObject *object )
   g_free( sink->priv->topic );
   g_free( sink->priv->node_name );
   g_free( sink->priv->frame_id );
+  g_free( sink->priv->camera_info_url );
 
   sink->priv->~RbfImageSinkPrivate();
 
@@ -247,6 +278,10 @@ static void rbf_image_sink_set_property( GObject *object, guint prop_id, const G
     g_free( sink->priv->frame_id );
     sink->priv->frame_id = g_value_dup_string( value );
     break;
+  case PROP_CAMERA_INFO_URL:
+    g_free( sink->priv->camera_info_url );
+    sink->priv->camera_info_url = g_value_dup_string( value );
+    break;
   case PROP_PREFER_COMPRESSED:
     sink->priv->prefer_compressed = g_value_get_boolean( value );
     break;
@@ -277,6 +312,9 @@ static void rbf_image_sink_get_property( GObject *object, guint prop_id, GValue 
     break;
   case PROP_FRAME_ID:
     g_value_set_string( value, sink->priv->frame_id );
+    break;
+  case PROP_CAMERA_INFO_URL:
+    g_value_set_string( value, sink->priv->camera_info_url );
     break;
   case PROP_PREFER_COMPRESSED:
     g_value_set_boolean( value, sink->priv->prefer_compressed );
@@ -322,6 +360,13 @@ static gboolean rbf_image_sink_start( GstBaseSink *basesink )
       return FALSE;
     }
 
+    auto node = sink->priv->ros_interface->get_node();
+    if ( !node ) {
+      GST_ERROR_OBJECT( sink, "No ROS node available" );
+      return FALSE;
+    }
+
+    rbf_image_sink_setup_camera_info( sink, node );
     GST_DEBUG_OBJECT( sink, "ROS interface started successfully" );
     return TRUE;
   } catch ( const std::exception &e ) {
@@ -343,6 +388,11 @@ static gboolean rbf_image_sink_stop( GstBaseSink *basesink )
 
     sink->priv->image_pub.reset();
     sink->priv->compressed_pub.reset();
+    sink->priv->camera_info_pub.reset();
+    sink->priv->set_camera_info_service.reset();
+    sink->priv->camera_info_loaded = FALSE;
+    sink->priv->camera_info_path.clear();
+    sink->priv->camera_name.clear();
 
     if ( sink->priv->ros_interface ) {
       sink->priv->ros_interface->shutdown();
@@ -429,6 +479,208 @@ static GstCaps *rbf_image_sink_get_caps( GstBaseSink *basesink, GstCaps *filter 
   return caps;
 }
 
+static std::string get_camera_info_topic( const gchar *image_topic )
+{
+  std::string topic = image_topic ? image_topic : "";
+  size_t last_slash = topic.find_last_of( '/' );
+  if ( last_slash == std::string::npos || last_slash == 0 ) {
+    return last_slash == 0 ? "/camera_info" : "camera_info";
+  }
+  return topic.substr( 0, last_slash ) + "/camera_info";
+}
+
+static std::string get_camera_namespace( const gchar *image_topic )
+{
+  std::string topic = image_topic ? image_topic : "";
+  size_t last_slash = topic.find_last_of( '/' );
+  if ( last_slash == std::string::npos ) {
+    return "";
+  }
+  if ( last_slash == 0 ) {
+    return "/";
+  }
+  return topic.substr( 0, last_slash );
+}
+
+static std::string get_set_camera_info_service_topic( const gchar *image_topic )
+{
+  std::string camera_namespace = get_camera_namespace( image_topic );
+  if ( camera_namespace.empty() ) {
+    return "set_camera_info";
+  }
+  if ( camera_namespace == "/" ) {
+    return "/set_camera_info";
+  }
+  return camera_namespace + "/set_camera_info";
+}
+
+static std::string get_default_camera_name( const gchar *image_topic )
+{
+  std::string camera_namespace = get_camera_namespace( image_topic );
+  while ( !camera_namespace.empty() && camera_namespace.front() == '/' ) {
+    camera_namespace.erase( camera_namespace.begin() );
+  }
+  while ( !camera_namespace.empty() && camera_namespace.back() == '/' ) {
+    camera_namespace.pop_back();
+  }
+  for ( char &c : camera_namespace ) {
+    if ( c == '/' ) {
+      c = '_';
+    }
+  }
+  return camera_namespace.empty() ? "camera" : camera_namespace;
+}
+
+static bool resolve_camera_info_url( const std::string &url, std::string &path,
+                                     std::string &error_message )
+{
+  static const std::string file_prefix = "file://";
+  static const std::string package_prefix = "package://";
+
+  if ( url.rfind( file_prefix, 0 ) == 0 ) {
+    path = url.substr( file_prefix.size() );
+    if ( path.empty() || path.front() != '/' ) {
+      error_message = "file:// camera-info-url must contain an absolute path";
+      return false;
+    }
+    return true;
+  }
+
+  if ( url.rfind( package_prefix, 0 ) == 0 ) {
+    std::string package_path = url.substr( package_prefix.size() );
+    size_t slash = package_path.find( '/' );
+    if ( slash == std::string::npos || slash == 0 || slash + 1 >= package_path.size() ) {
+      error_message = "package:// camera-info-url must be package://package_name/path";
+      return false;
+    }
+
+    std::string package_name = package_path.substr( 0, slash );
+    std::string relative_path = package_path.substr( slash + 1 );
+    try {
+      path = ament_index_cpp::get_package_share_directory( package_name ) + "/" + relative_path;
+      return true;
+    } catch ( const std::exception &e ) {
+      error_message = e.what();
+      return false;
+    }
+  }
+
+  error_message = "camera-info-url must use file:// or package://";
+  return false;
+}
+
+static bool get_caps_dimensions( const GstCaps *caps, uint32_t &width, uint32_t &height )
+{
+  GstVideoInfo video_info;
+  if ( gst_video_info_from_caps( &video_info, caps ) ) {
+    width = GST_VIDEO_INFO_WIDTH( &video_info );
+    height = GST_VIDEO_INFO_HEIGHT( &video_info );
+    return width > 0 && height > 0;
+  }
+
+  gint caps_width = 0;
+  gint caps_height = 0;
+  GstStructure *structure = gst_caps_get_structure( caps, 0 );
+  bool success = gst_structure_get_int( structure, "width", &caps_width ) &&
+                 gst_structure_get_int( structure, "height", &caps_height ) && caps_width > 0 &&
+                 caps_height > 0;
+  if ( success ) {
+    width = static_cast<uint32_t>( caps_width );
+    height = static_cast<uint32_t>( caps_height );
+  }
+  return success;
+}
+
+static rclcpp::QoS make_default_qos()
+{
+  rclcpp::QoS qos( 1 );
+  qos.reliable();
+  qos.durability_volatile();
+  return qos;
+}
+
+static void rbf_image_sink_setup_camera_info( RbfImageSink *sink, rclcpp::Node::SharedPtr node )
+{
+  sink->priv->camera_info_pub.reset();
+  sink->priv->set_camera_info_service.reset();
+  sink->priv->camera_info_resolution_mismatch = FALSE;
+
+  if ( !sink->priv->camera_info_url || sink->priv->camera_info_url[0] == '\0' ) {
+    sink->priv->camera_info_loaded = FALSE;
+    sink->priv->camera_info_path.clear();
+    sink->priv->camera_name.clear();
+    return;
+  }
+
+  std::string error_message;
+  std::string resolved_path;
+  if ( !resolve_camera_info_url( sink->priv->camera_info_url, resolved_path, error_message ) ) {
+    GST_ERROR_OBJECT( sink, "Invalid camera info URL '%s': %s; camera info publishing disabled",
+                      sink->priv->camera_info_url, error_message.c_str() );
+    sink->priv->camera_info_loaded = FALSE;
+    sink->priv->camera_info_path.clear();
+    sink->priv->camera_name.clear();
+    return;
+  }
+  sink->priv->camera_info_path = resolved_path;
+
+  std::string service_topic = get_set_camera_info_service_topic( sink->priv->topic );
+  sink->priv->set_camera_info_service = node->create_service<sensor_msgs::srv::SetCameraInfo>(
+      service_topic, [sink]( const std::shared_ptr<sensor_msgs::srv::SetCameraInfo::Request> request,
+                             std::shared_ptr<sensor_msgs::srv::SetCameraInfo::Response> response ) {
+        std::lock_guard<std::mutex> lock( sink->priv->mutex );
+        const auto &new_info = request->camera_info;
+        if ( new_info.width == 0 || new_info.height == 0 ) {
+          response->success = false;
+          response->status_message = "Camera info width and height must be nonzero";
+          return;
+        }
+
+        sink->priv->camera_info = new_info;
+        sink->priv->camera_info_loaded = TRUE;
+        if ( sink->priv->camera_name.empty() ) {
+          sink->priv->camera_name = get_default_camera_name( sink->priv->topic );
+        }
+
+        if ( camera_calibration_parsers::writeCalibration(
+                 sink->priv->camera_info_path, sink->priv->camera_name, sink->priv->camera_info ) ) {
+          response->success = true;
+          response->status_message = "Camera info updated";
+        } else {
+          response->success = true;
+          response->status_message =
+              "Camera info updated in memory, but saving calibration file failed";
+        }
+        sink->priv->camera_info_resolution_mismatch = FALSE;
+      } );
+  GST_INFO_OBJECT( sink, "Created set_camera_info service on %s", service_topic.c_str() );
+
+  if ( sink->priv->camera_info_loaded ) {
+    std::string camera_info_topic = get_camera_info_topic( sink->priv->topic );
+    sink->priv->camera_info_pub =
+        node->create_publisher<sensor_msgs::msg::CameraInfo>( camera_info_topic, make_default_qos() );
+    GST_INFO_OBJECT( sink, "Created camera info publisher on %s", camera_info_topic.c_str() );
+    return;
+  }
+
+  if ( !camera_calibration_parsers::readCalibration(
+           sink->priv->camera_info_path, sink->priv->camera_name, sink->priv->camera_info ) ) {
+    sink->priv->camera_info_loaded = FALSE;
+    GST_ERROR_OBJECT(
+        sink, "Failed to load camera info from '%s'; camera info publishing until valid camera info is set via service.",
+        sink->priv->camera_info_url );
+    sink->priv->camera_name.clear();
+    return;
+  }
+  GST_INFO_OBJECT( sink, "Loaded camera info from %s.", sink->priv->camera_info_url );
+  sink->priv->camera_info_loaded = TRUE;
+
+  std::string camera_info_topic = get_camera_info_topic( sink->priv->topic );
+  sink->priv->camera_info_pub =
+      node->create_publisher<sensor_msgs::msg::CameraInfo>( camera_info_topic, make_default_qos() );
+  GST_INFO_OBJECT( sink, "Created camera info publisher on %s", camera_info_topic.c_str() );
+}
+
 static gboolean rbf_image_sink_set_caps( GstBaseSink *basesink, GstCaps *caps )
 {
   RbfImageSink *sink = RBF_IMAGE_SINK( basesink );
@@ -455,19 +707,23 @@ static gboolean rbf_image_sink_set_caps( GstBaseSink *basesink, GstCaps *caps )
 
     // QoS settings (RELIABLE as this leaves decision to subscribers)
     // Use queue depth of 1 to minimize latency
-    rclcpp::QoS qos( 1 );
-    qos.reliable();
-    qos.durability_volatile();
+    rclcpp::QoS qos = make_default_qos();
 
     // Reset publishers
     sink->priv->image_pub.reset();
     sink->priv->compressed_pub.reset();
+    sink->priv->compressed_width = 0;
+    sink->priv->compressed_height = 0;
 
     if ( compression_format ) {
       // Compressed image - publish to topic/compressed
       sink->priv->is_compressed = TRUE;
       sink->priv->compression_format = *compression_format;
       sink->priv->video_info_valid = FALSE;
+      if ( !get_caps_dimensions( caps, sink->priv->compressed_width, sink->priv->compressed_height ) ) {
+        GST_WARNING_OBJECT( sink, "Compressed caps do not include width and height; camera info "
+                                  "resolution will not be verifiable" );
+      }
 
       std::string compressed_topic = std::string( sink->priv->topic ) + "/compressed";
       GST_INFO_OBJECT( sink, "Creating compressed publisher on %s (format: %s)",
@@ -520,6 +776,61 @@ static bool fill_image_msg( sensor_msgs::msg::Image &msg, RbfImageSink *sink,
   msg.is_bigendian = ( G_BYTE_ORDER == G_BIG_ENDIAN );
 
   return true;
+}
+
+static void publish_camera_info( RbfImageSink *sink, rclcpp::Node::SharedPtr node,
+                                 const rclcpp::Time &stamp, uint32_t stream_width,
+                                 uint32_t stream_height )
+{
+  if ( !sink->priv->camera_info_loaded ) {
+    return;
+  }
+
+  auto camera_info = sink->priv->camera_info;
+  if ( camera_info.width != stream_width || camera_info.height != stream_height ) {
+    sink->priv->camera_info_pub.reset();
+    if ( !sink->priv->camera_info_resolution_mismatch ) {
+      GST_ERROR_OBJECT( sink,
+                        "Camera info resolution %ux%u from '%s' does not match stream "
+                        "resolution %ux%u; camera info publishing disabled",
+                        camera_info.width, camera_info.height, sink->priv->camera_info_url,
+                        stream_width, stream_height );
+    }
+    sink->priv->camera_info_resolution_mismatch = TRUE;
+    return;
+  }
+
+  sink->priv->camera_info_resolution_mismatch = FALSE;
+  if ( !sink->priv->camera_info_pub ) {
+    rclcpp::QoS qos( 1 );
+    qos.reliable();
+    qos.durability_volatile();
+
+    std::string camera_info_topic = get_camera_info_topic( sink->priv->topic );
+    GST_INFO_OBJECT( sink, "Creating camera info publisher on %s", camera_info_topic.c_str() );
+    sink->priv->camera_info_pub =
+        node->create_publisher<sensor_msgs::msg::CameraInfo>( camera_info_topic, qos );
+  }
+
+  camera_info.header.stamp = stamp;
+  camera_info.header.frame_id = sink->priv->frame_id;
+  sink->priv->camera_info_pub->publish( camera_info );
+}
+
+static void handle_missing_camera_info_dimensions( RbfImageSink *sink )
+{
+  if ( !sink->priv->camera_info_loaded ) {
+    return;
+  }
+
+  sink->priv->camera_info_pub.reset();
+  if ( !sink->priv->camera_info_resolution_mismatch ) {
+    GST_ERROR_OBJECT( sink,
+                      "Unable to verify camera info resolution for '%s': current caps do not "
+                      "include width and height; camera info publishing disabled",
+                      sink->priv->camera_info_url );
+  }
+  sink->priv->camera_info_resolution_mismatch = TRUE;
 }
 
 static GstFlowReturn rbf_image_sink_render( GstBaseSink *basesink, GstBuffer *buffer )
@@ -595,6 +906,12 @@ static GstFlowReturn rbf_image_sink_render( GstBaseSink *basesink, GstBuffer *bu
       gst_buffer_unmap( buffer, &map );
 
       sink->priv->compressed_pub->publish( std::move( msg ) );
+      if ( sink->priv->compressed_width > 0 && sink->priv->compressed_height > 0 ) {
+        publish_camera_info( sink, node, stamp, sink->priv->compressed_width,
+                             sink->priv->compressed_height );
+      } else {
+        handle_missing_camera_info_dimensions( sink );
+      }
 
     } else if ( !sink->priv->is_compressed && sink->priv->image_pub && sink->priv->video_info_valid ) {
       if ( sink->priv->image_pub->can_loan_messages() ) {
@@ -616,7 +933,10 @@ static GstFlowReturn rbf_image_sink_render( GstBaseSink *basesink, GstBuffer *bu
         memcpy( msg.data.data(), map.data, map.size );
         gst_buffer_unmap( buffer, &map );
 
+        uint32_t image_width = msg.width;
+        uint32_t image_height = msg.height;
         sink->priv->image_pub->publish( std::move( loaned_msg ) );
+        publish_camera_info( sink, node, stamp, image_width, image_height );
       } else {
         auto msg = std::make_unique<sensor_msgs::msg::Image>();
         if ( !fill_image_msg( *msg, sink, stamp ) ) {
@@ -633,7 +953,10 @@ static GstFlowReturn rbf_image_sink_render( GstBaseSink *basesink, GstBuffer *bu
         msg->data.assign( map.data, map.data + map.size );
         gst_buffer_unmap( buffer, &map );
 
+        uint32_t image_width = msg->width;
+        uint32_t image_height = msg->height;
         sink->priv->image_pub->publish( std::move( msg ) );
+        publish_camera_info( sink, node, stamp, image_width, image_height );
       }
     } else {
       GST_WARNING_OBJECT( sink, "No publisher available" );
