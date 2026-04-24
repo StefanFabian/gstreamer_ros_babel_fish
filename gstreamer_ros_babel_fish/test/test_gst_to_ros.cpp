@@ -10,13 +10,12 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
-
-#include <sys/stat.h>
 
 namespace enc = sensor_msgs::image_encodings;
 
@@ -63,6 +62,13 @@ make_set_camera_info_request( uint32_t width, uint32_t height, double focal, dou
   request->camera_info.r = { 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 };
   request->camera_info.p = { focal, 0.0, cx, 0.0, 0.0, focal, cy, 0.0, 0.0, 0.0, 1.0, 0.0 };
   return request;
+}
+
+static std::string make_unique_camera_info_path( const std::string &file_name )
+{
+  return testing::TempDir() +
+         std::to_string( std::chrono::steady_clock::now().time_since_epoch().count() ) + "_" +
+         file_name;
 }
 
 class GstToRosTest : public ::testing::Test
@@ -426,8 +432,8 @@ TEST_F( GstToRosTest, ProvidesIndependentSetCameraInfoServicesForMultipleSinks )
   const int height = 240;
   const std::string left_path = testing::TempDir() + "rbf_left_camera_info.yaml";
   const std::string right_path = testing::TempDir() + "rbf_right_camera_info.yaml";
-  write_camera_info_file( left_path, width + 1, height, "left_camera" );
-  write_camera_info_file( right_path, width + 1, height, "right_camera" );
+  ASSERT_NO_FATAL_FAILURE( write_camera_info_file( left_path, width + 1, height, "left_camera" ) );
+  ASSERT_NO_FATAL_FAILURE( write_camera_info_file( right_path, width + 1, height, "right_camera" ) );
 
   sensor_msgs::msg::CameraInfo::SharedPtr left_info;
   sensor_msgs::msg::CameraInfo::SharedPtr right_info;
@@ -551,9 +557,10 @@ TEST_F( GstToRosTest, SetCameraInfoUpdatesMemoryWhenSavingFails )
   const std::string topic = "/readonly_camera/image_raw";
   const int width = 320;
   const int height = 240;
-  const std::string camera_info_path = testing::TempDir() + "rbf_readonly_camera_info.yaml";
-  write_camera_info_file( camera_info_path, width, height, "readonly_camera" );
-  ASSERT_EQ( chmod( camera_info_path.c_str(), 0444 ), 0 );
+  const std::string camera_info_path =
+      make_unique_camera_info_path( "rbf_readonly_camera_info.yaml" );
+  ASSERT_NO_FATAL_FAILURE(
+      write_camera_info_file( camera_info_path, width, height, "readonly_camera" ) );
 
   auto camera_info_sub = node_->create_subscription<sensor_msgs::msg::CameraInfo>(
       "/readonly_camera/camera_info", 10, [this]( sensor_msgs::msg::CameraInfo::SharedPtr msg ) {
@@ -580,14 +587,17 @@ TEST_F( GstToRosTest, SetCameraInfoUpdatesMemoryWhenSavingFails )
   auto client =
       node_->create_client<sensor_msgs::srv::SetCameraInfo>( "/readonly_camera/set_camera_info" );
   ASSERT_TRUE( client->wait_for_service( std::chrono::seconds( 5 ) ) );
-  wait_for_discovery( camera_info_sub );
+  // Turn file into a directory to force save failure
+  ASSERT_TRUE( std::filesystem::remove( camera_info_path ) );
+  ASSERT_TRUE( std::filesystem::create_directory( camera_info_path ) );
 
   auto response_future =
       client->async_send_request( make_set_camera_info_request( width, height, 6.0, 164.0, 124.0 ) );
   ASSERT_EQ( response_future.wait_for( std::chrono::seconds( 5 ) ), std::future_status::ready );
   auto response = response_future.get();
   ASSERT_TRUE( response->success );
-  EXPECT_NE( response->status_message.find( "saving calibration file failed" ), std::string::npos );
+  EXPECT_NE( response->status_message.find( "saving calibration file failed" ), std::string::npos )
+      << "Unexpected status message: " << response->status_message;
 
   auto start = std::chrono::steady_clock::now();
   while ( std::chrono::steady_clock::now() - start < std::chrono::seconds( 5 ) ) {
@@ -600,8 +610,6 @@ TEST_F( GstToRosTest, SetCameraInfoUpdatesMemoryWhenSavingFails )
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
   }
 
-  chmod( camera_info_path.c_str(), 0644 );
-
   std::lock_guard<std::mutex> lock( last_msg_mutex_ );
   ASSERT_NE( last_camera_info_msg_, nullptr );
   EXPECT_DOUBLE_EQ( last_camera_info_msg_->k[0], 6.0 );
@@ -612,9 +620,10 @@ TEST_F( GstToRosTest, PreservesInMemoryCameraInfoAcrossCapsRenegotiation )
   const std::string topic = "/renegotiated_camera/image_raw";
   const int width = 320;
   const int height = 240;
-  const std::string camera_info_path = testing::TempDir() + "rbf_renegotiated_camera_info.yaml";
-  write_camera_info_file( camera_info_path, width, height, "renegotiated_camera" );
-  ASSERT_EQ( chmod( camera_info_path.c_str(), 0444 ), 0 );
+  const std::string camera_info_path =
+      make_unique_camera_info_path( "rbf_renegotiated_camera_info.yaml" );
+  ASSERT_NO_FATAL_FAILURE(
+      write_camera_info_file( camera_info_path, width, height, "renegotiated_camera" ) );
 
   auto camera_info_sub = node_->create_subscription<sensor_msgs::msg::CameraInfo>(
       "/renegotiated_camera/camera_info", 10, [this]( sensor_msgs::msg::CameraInfo::SharedPtr msg ) {
@@ -641,14 +650,17 @@ TEST_F( GstToRosTest, PreservesInMemoryCameraInfoAcrossCapsRenegotiation )
   auto client = node_->create_client<sensor_msgs::srv::SetCameraInfo>(
       "/renegotiated_camera/set_camera_info" );
   ASSERT_TRUE( client->wait_for_service( std::chrono::seconds( 5 ) ) );
-  wait_for_discovery( camera_info_sub );
+  // Turn file into a directory to force save failure
+  ASSERT_TRUE( std::filesystem::remove( camera_info_path ) );
+  ASSERT_TRUE( std::filesystem::create_directory( camera_info_path ) );
 
   auto response_future =
       client->async_send_request( make_set_camera_info_request( width, height, 7.0, 165.0, 125.0 ) );
   ASSERT_EQ( response_future.wait_for( std::chrono::seconds( 5 ) ), std::future_status::ready );
   auto response = response_future.get();
   ASSERT_TRUE( response->success );
-  EXPECT_NE( response->status_message.find( "saving calibration file failed" ), std::string::npos );
+  EXPECT_NE( response->status_message.find( "saving calibration file failed" ), std::string::npos )
+      << "Unexpected status message: " << response->status_message;
 
   GstElement *filter = gst_bin_get_by_name( GST_BIN( pipeline_ ), "filter" );
   ASSERT_NE( filter, nullptr );
@@ -669,8 +681,6 @@ TEST_F( GstToRosTest, PreservesInMemoryCameraInfoAcrossCapsRenegotiation )
     }
     std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
   }
-
-  chmod( camera_info_path.c_str(), 0644 );
 
   std::lock_guard<std::mutex> lock( last_msg_mutex_ );
   ASSERT_NE( last_camera_info_msg_, nullptr );

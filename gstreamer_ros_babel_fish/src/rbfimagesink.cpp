@@ -667,7 +667,7 @@ static void rbf_image_sink_setup_camera_info( RbfImageSink *sink, rclcpp::Node::
            sink->priv->camera_info_path, sink->priv->camera_name, sink->priv->camera_info ) ) {
     sink->priv->camera_info_loaded = FALSE;
     GST_ERROR_OBJECT(
-        sink, "Failed to load camera info from '%s'; camera info publishing until valid camera info is set via service.",
+        sink, "Failed to load camera info from '%s'; camera info publishing is disabled until valid camera info is set via service.",
         sink->priv->camera_info_url );
     sink->priv->camera_name.clear();
     return;
@@ -802,14 +802,10 @@ static void publish_camera_info( RbfImageSink *sink, rclcpp::Node::SharedPtr nod
 
   sink->priv->camera_info_resolution_mismatch = FALSE;
   if ( !sink->priv->camera_info_pub ) {
-    rclcpp::QoS qos( 1 );
-    qos.reliable();
-    qos.durability_volatile();
-
     std::string camera_info_topic = get_camera_info_topic( sink->priv->topic );
     GST_INFO_OBJECT( sink, "Creating camera info publisher on %s", camera_info_topic.c_str() );
     sink->priv->camera_info_pub =
-        node->create_publisher<sensor_msgs::msg::CameraInfo>( camera_info_topic, qos );
+        node->create_publisher<sensor_msgs::msg::CameraInfo>( camera_info_topic, make_default_qos() );
   }
 
   camera_info.header.stamp = stamp;
