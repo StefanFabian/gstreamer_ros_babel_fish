@@ -147,6 +147,7 @@ gst-launch-1.0 v4l2src ! rbfimagesink topic=/camera/image_raw
 - `node`: (Pointer) External `rclcpp::Node` pointer (optional)
 - `node-name`: Name of the internal node if no external node is provided (default: `rbfimagesink`)
 - `frame-id`: `frame_id` to set in the ROS message header
+- `camera-info-url`: `file://` or `package://` URL for camera calibration data. When set, the sink publishes the sibling `camera_info` topic and exposes a sibling `set_camera_info` service.
 - `prefer-compressed`: Whether to prefer compressed formats during negotiation if both available (default: `true`)
 - `subscription-count`: Number of current subscriptions to the topic (read-only)
 - `enable-nv-formats`: Enable NV formats (NV21, NV24) (default: `false`)

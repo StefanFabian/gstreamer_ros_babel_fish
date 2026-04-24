@@ -111,6 +111,7 @@ The plugin acts as a bridge between GStreamer multimedia pipelines and ROS 2 ima
 - `node-name`: Name for internal ROS node (default: `rbfimagesink`)
 - `node`: External ROS node pointer
 - `frame-id`: frame_id for ROS message headers
+- `camera-info-url`: file:// or package:// camera calibration URL. When configured, publishes the sibling `camera_info` topic and exposes the sibling `set_camera_info` service.
 - `prefer-compressed`: Prefer compressed formats during caps negotiation
 - `enable-nv-formats`: Enable NV formats (NV21, NV24)
 - `subscription-count`: Number of accessible subscriptions (Read-only)

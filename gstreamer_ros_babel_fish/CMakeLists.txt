@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 add_definitions(-Wall -Wpedantic -Wno-deprecated-declarations)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(camera_calibration_parsers REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
@@ -27,7 +29,11 @@ target_include_directories(
                          $<INSTALL_INTERFACE:include> ${GST_INCLUDE_DIRS})
 
 target_link_libraries(
-  gstrosbabelfish PUBLIC ${GST_LIBRARIES} rclcpp::rclcpp ${sensor_msgs_TARGETS}
+  gstrosbabelfish PUBLIC ${GST_LIBRARIES}
+                         ament_index_cpp::ament_index_cpp
+                         camera_calibration_parsers::camera_calibration_parsers
+                         rclcpp::rclcpp
+                         ${sensor_msgs_TARGETS}
                          sensor_msgs::sensor_msgs_library)
 
 # Remove lib prefix for GStreamer plugins
@@ -44,9 +50,10 @@ install(DIRECTORY include/ DESTINATION include)
 
 # Export for downstream packages
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp sensor_msgs)
+ament_export_dependencies(ament_index_cpp camera_calibration_parsers rclcpp sensor_msgs)
 
 if(BUILD_TESTING)
+  install(DIRECTORY test/calibrations DESTINATION share/${PROJECT_NAME}/test)
   find_package(ament_cmake_gtest REQUIRED)
 
   function(add_gst_test name source)
