@@ -12,14 +12,19 @@ find_package(sensor_msgs REQUIRED)
 
 include(FindPkgConfig)
 pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-base-1.0
-                  gstreamer-video-1.0)
+                  gstreamer-video-1.0 gstreamer-codecparsers-1.0)
 
 # ##############################################################################
 # Build ##
 # ##############################################################################
 
-set(SOURCES src/format_conversion.cpp src/ros_node_interface.cpp
-            src/rbfimagesink.cpp src/rbfimagesrc.cpp src/plugin.cpp)
+set(SOURCES
+    src/compressed_header_parser.cpp
+    src/format_conversion.cpp
+    src/ros_node_interface.cpp
+    src/rbfimagesink.cpp
+    src/rbfimagesrc.cpp
+    src/plugin.cpp)
 
 # Build as a GStreamer plugin (shared library)
 add_library(gstrosbabelfish SHARED ${SOURCES})

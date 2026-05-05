@@ -55,9 +55,17 @@ std::optional<std::string> caps_to_compression_format( const GstCaps *caps );
 GstCaps *create_caps_from_ros_image( const std::string &encoding, uint32_t width, uint32_t height,
                                      uint32_t step, int framerate_num = 0, int framerate_den = 1 );
 
-// Create GStreamer caps for compressed images
+// Create GStreamer caps for compressed images.
+// The two-argument overload emits bare caps (media type + framerate). The
+// data-aware overload parses the compressed buffer to populate width/height
+// and, for baseline JPEG, the sof-marker / colorspace / sampling /
+// interlace-mode fields required by strict decoders. If parsing fails (e.g.
+// progressive JPEG, exotic component layout) it falls back to bare caps.
 GstCaps *create_caps_for_compressed( const std::string &format, int framerate_num = 0,
                                      int framerate_den = 1 );
+
+GstCaps *create_caps_for_compressed( const std::string &format, const uint8_t *data, size_t size,
+                                     int framerate_num = 0, int framerate_den = 1 );
 
 // Get supported raw video caps (for sink pad template)
 GstCaps *get_supported_raw_caps();

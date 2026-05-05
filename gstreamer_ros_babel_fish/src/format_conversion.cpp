@@ -15,6 +15,7 @@
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "gstreamer_ros_babel_fish/format_conversion.hpp"
+#include "gstreamer_ros_babel_fish/compressed_header_parser.hpp"
 #include <sensor_msgs/image_encodings.hpp>
 #include <unordered_map>
 
@@ -132,15 +133,42 @@ GstCaps *create_caps_from_ros_image( const std::string &encoding, uint32_t width
 
 GstCaps *create_caps_for_compressed( const std::string &format, int framerate_num, int framerate_den )
 {
+  return create_caps_for_compressed( format, nullptr, 0, framerate_num, framerate_den );
+}
+
+GstCaps *create_caps_for_compressed( const std::string &format, const uint8_t *data, size_t size,
+                                     int framerate_num, int framerate_den )
+{
   // ROS CompressedImage format can be:
   // - Simple: "jpeg", "png"
   // - Extended: "<source_encoding>; <type> compressed <target_encoding>"
   //   e.g., "rgb8; jpeg compressed bgr8"
   GstCaps *caps = nullptr;
-  if ( format.find( "jpeg" ) != std::string::npos || format.find( "jpg" ) != std::string::npos ) {
+  bool is_jpeg =
+      format.find( "jpeg" ) != std::string::npos || format.find( "jpg" ) != std::string::npos;
+  bool is_png = format.find( "png" ) != std::string::npos;
+
+  if ( is_jpeg ) {
     caps = gst_caps_new_empty_simple( "image/jpeg" );
-  } else if ( format.find( "png" ) != std::string::npos ) {
+    JpegHeaderInfo info = parse_jpeg_header( data, size );
+    if ( info.valid ) {
+      gst_caps_set_simple( caps, "sof-marker", G_TYPE_INT, info.sof_marker, "colorspace",
+                           G_TYPE_STRING, info.colorspace, "sampling", G_TYPE_STRING, info.sampling,
+                           "width", G_TYPE_INT, info.width, "height", G_TYPE_INT, info.height,
+                           "interlace-mode", G_TYPE_STRING, "progressive", nullptr );
+    } else if ( info.dims_valid ) {
+      // Non-baseline / unknown layout still gets width/height - strict
+      // decoders will reject anyway, but downstream negotiation benefits.
+      gst_caps_set_simple( caps, "width", G_TYPE_INT, info.width, "height", G_TYPE_INT, info.height,
+                           nullptr );
+    }
+  } else if ( is_png ) {
     caps = gst_caps_new_empty_simple( "image/png" );
+    PngHeaderInfo info = parse_png_header( data, size );
+    if ( info.valid ) {
+      gst_caps_set_simple( caps, "width", G_TYPE_INT, info.width, "height", G_TYPE_INT, info.height,
+                           nullptr );
+    }
   }
 
   if ( caps ) {

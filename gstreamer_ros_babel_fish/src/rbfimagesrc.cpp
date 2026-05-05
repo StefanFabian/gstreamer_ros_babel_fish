@@ -984,8 +984,9 @@ static GstFlowReturn rbf_image_src_create( GstPushSrc *pushsrc, GstBuffer **buff
       auto compressed = std::get<sensor_msgs::msg::CompressedImage::SharedPtr>( msg );
 
       // Create caps for this image
-      GstCaps *new_caps = create_caps_for_compressed( compressed->format, src->priv->framerate_num,
-                                                      src->priv->framerate_den );
+      GstCaps *new_caps = create_caps_for_compressed(
+          compressed->format, compressed->data.data(), compressed->data.size(),
+          src->priv->framerate_num, src->priv->framerate_den );
 
       if ( !new_caps ) {
         GST_ERROR_OBJECT( src, "Unsupported compressed format: %s", compressed->format.c_str() );

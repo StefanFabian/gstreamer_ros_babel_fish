@@ -1,4 +1,5 @@
 #include "gstreamer_ros_babel_fish/format_conversion.hpp"
+#include "jpeg_fixtures.hpp"
 #include <gst/gst.h>
 #include <gtest/gtest.h>
 #include <sensor_msgs/image_encodings.hpp>
@@ -237,6 +238,185 @@ TEST_F( FormatConversionTest, CreateCapsForCompressedPng )
   GstStructure *structure = gst_caps_get_structure( caps, 0 );
   EXPECT_STREQ( gst_structure_get_name( structure ), "image/png" );
 
+  gst_caps_unref( caps );
+}
+
+// JPEG header parsing - populated caps must satisfy strict decoders. Three
+// positive cases cover the YCbCr / grayscale / fallback branches; the RGB
+// branch is exercised manually elsewhere because gst-launch can't natively
+// produce Adobe-APP14-RGB JPEGs.
+TEST_F( FormatConversionTest, JpegBaseline420EmitsFullCaps )
+{
+  using namespace gstreamer_ros_babel_fish_test;
+  GstCaps *caps =
+      create_caps_for_compressed( "jpeg", kJpegBaseline420, sizeof( kJpegBaseline420 ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_name( s ), "image/jpeg" );
+
+  gint sof = -1, width = 0, height = 0;
+  EXPECT_TRUE( gst_structure_get_int( s, "sof-marker", &sof ) );
+  EXPECT_EQ( sof, 0 );
+  EXPECT_STREQ( gst_structure_get_string( s, "colorspace" ), "sYUV" );
+  EXPECT_STREQ( gst_structure_get_string( s, "sampling" ), "YCbCr-4:2:0" );
+  EXPECT_TRUE( gst_structure_get_int( s, "width", &width ) );
+  EXPECT_EQ( width, 16 );
+  EXPECT_TRUE( gst_structure_get_int( s, "height", &height ) );
+  EXPECT_EQ( height, 16 );
+  EXPECT_STREQ( gst_structure_get_string( s, "interlace-mode" ), "progressive" );
+
+  gst_caps_unref( caps );
+}
+
+TEST_F( FormatConversionTest, JpegGrayscaleEmitsGrayCaps )
+{
+  using namespace gstreamer_ros_babel_fish_test;
+  GstCaps *caps =
+      create_caps_for_compressed( "jpeg", kJpegGrayscale, sizeof( kJpegGrayscale ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_string( s, "colorspace" ), "GRAY" );
+  EXPECT_STREQ( gst_structure_get_string( s, "sampling" ), "GRAYSCALE" );
+
+  gst_caps_unref( caps );
+}
+
+TEST_F( FormatConversionTest, JpegProgressiveEmitsFullCapsWithSofMarker2 )
+{
+  using namespace gstreamer_ros_babel_fish_test;
+  GstCaps *caps =
+      create_caps_for_compressed( "jpeg", kJpegProgressive, sizeof( kJpegProgressive ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_name( s ), "image/jpeg" );
+  // Non-baseline still gets full caps; sof-marker=2 lets strict decoders
+  // self-exclude during negotiation, leaving the non-strict path to handle
+  // progressive input.
+  gint sof = -1, width = 0, height = 0;
+  EXPECT_TRUE( gst_structure_get_int( s, "sof-marker", &sof ) );
+  EXPECT_EQ( sof, 2 );
+  EXPECT_STREQ( gst_structure_get_string( s, "colorspace" ), "sYUV" );
+  EXPECT_STREQ( gst_structure_get_string( s, "sampling" ), "YCbCr-4:2:0" );
+  EXPECT_TRUE( gst_structure_get_int( s, "width", &width ) );
+  EXPECT_EQ( width, 16 );
+  EXPECT_TRUE( gst_structure_get_int( s, "height", &height ) );
+  EXPECT_EQ( height, 16 );
+
+  gst_caps_unref( caps );
+}
+
+// Pins the APP14 parsing branch. Without the +2 length-byte skip, payload[11]
+// reads flags1[0] (=0) instead of the transform byte (=1), so the parser
+// takes the transform=0 branch with numeric component IDs (which neither
+// match RGB nor BGR) and would emit bare caps. With the fix, transform=1 is
+// recognised and the Adobe branch emits sYUV / YCbCr-4:4:4.
+TEST_F( FormatConversionTest, JpegAdobeApp14Transform1IsDetectedAsYCbCr )
+{
+  static constexpr unsigned char kJpegAdobeT1[] = {
+      0xFF, 0xD8,                  // SOI
+      0xFF, 0xEE,                  // APP14
+      0x00, 0x0E,                  // length = 14
+      'A',  'd',  'o',  'b',  'e', // identifier
+      0x00, 0x65,                  // version
+      0x00, 0x00,                  // flags0
+      0x00, 0x00,                  // flags1
+      0x01,                        // transform = 1 (YCbCr)
+      0xFF, 0xC0,                  // SOF0
+      0x00, 0x11,                  // length = 17
+      0x08,                        // sample precision
+      0x00, 0x10, 0x00, 0x10,      // height=16, width=16
+      0x03,                        // num_components
+      0x01, 0x11, 0x00,            // C0: id=1, sampling=1:1, tq=0
+      0x02, 0x11, 0x00,            // C1: id=2, sampling=1:1, tq=0
+      0x03, 0x11, 0x00,            // C2: id=3, sampling=1:1, tq=0
+  };
+  GstCaps *caps = create_caps_for_compressed( "jpeg", kJpegAdobeT1, sizeof( kJpegAdobeT1 ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_string( s, "colorspace" ), "sYUV" );
+  EXPECT_STREQ( gst_structure_get_string( s, "sampling" ), "YCbCr-4:4:4" );
+  gint sof = -1;
+  EXPECT_TRUE( gst_structure_get_int( s, "sof-marker", &sof ) );
+  EXPECT_EQ( sof, 0 );
+
+  gst_caps_unref( caps );
+}
+
+// Truncated JPEG with an APP0 length field that extends past the buffer must
+// fall back to bare caps without over-reading. gst_jpeg_parse trusts the
+// on-wire length, so without the bounds check the APP0 identifier read and
+// SOF parser would access bytes past the ROS message buffer.
+TEST_F( FormatConversionTest, JpegMalformedAppLengthFallsBackToBareCaps )
+{
+  static constexpr unsigned char kJpegTruncatedApp0[] = {
+      0xFF, 0xD8, // SOI
+      0xFF, 0xE0, // APP0
+      0xFF, 0xFF, // length = 65535, far past buffer end
+  };
+  GstCaps *caps =
+      create_caps_for_compressed( "jpeg", kJpegTruncatedApp0, sizeof( kJpegTruncatedApp0 ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_name( s ), "image/jpeg" );
+  EXPECT_FALSE( gst_structure_has_field( s, "sof-marker" ) );
+  EXPECT_FALSE( gst_structure_has_field( s, "width" ) );
+  EXPECT_FALSE( gst_structure_has_field( s, "height" ) );
+
+  gst_caps_unref( caps );
+}
+
+// SOF segment whose declared length extends past the buffer: without the
+// bounds check, gst_jpeg_segment_parse_frame_header would read past `size`.
+TEST_F( FormatConversionTest, JpegTruncatedSofFallsBackToBareCaps )
+{
+  static constexpr unsigned char kJpegTruncatedSof[] = {
+      0xFF, 0xD8, // SOI
+      0xFF, 0xC0, // SOF0
+      0x00, 0x11, // length = 17, but buffer ends right here
+  };
+  GstCaps *caps =
+      create_caps_for_compressed( "jpeg", kJpegTruncatedSof, sizeof( kJpegTruncatedSof ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_name( s ), "image/jpeg" );
+  EXPECT_FALSE( gst_structure_has_field( s, "sof-marker" ) );
+  EXPECT_FALSE( gst_structure_has_field( s, "width" ) );
+  EXPECT_FALSE( gst_structure_has_field( s, "height" ) );
+
+  gst_caps_unref( caps );
+}
+
+TEST_F( FormatConversionTest, PngEmitsWidthHeight )
+{
+  using namespace gstreamer_ros_babel_fish_test;
+  GstCaps *caps = create_caps_for_compressed( "png", kPngRgb, sizeof( kPngRgb ), 30, 1 );
+  ASSERT_NE( caps, nullptr );
+
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_STREQ( gst_structure_get_name( s ), "image/png" );
+  gint width = 0, height = 0;
+  EXPECT_TRUE( gst_structure_get_int( s, "width", &width ) );
+  EXPECT_TRUE( gst_structure_get_int( s, "height", &height ) );
+  EXPECT_EQ( width, 8 );
+  EXPECT_EQ( height, 8 );
+
+  gst_caps_unref( caps );
+}
+
+TEST_F( FormatConversionTest, CompressedNoBufferStillEmitsBareCaps )
+{
+  // Compatibility with callers that don't have buffer bytes available: the
+  // two-arg overload must still produce valid caps.
+  GstCaps *caps = create_caps_for_compressed( "jpeg" );
+  ASSERT_NE( caps, nullptr );
+  GstStructure *s = gst_caps_get_structure( caps, 0 );
+  EXPECT_FALSE( gst_structure_has_field( s, "sof-marker" ) );
   gst_caps_unref( caps );
 }
 
