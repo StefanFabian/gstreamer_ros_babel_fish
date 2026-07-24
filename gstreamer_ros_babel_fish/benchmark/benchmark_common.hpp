@@ -321,8 +321,8 @@ public:
       gst_element_send_event( pipeline_, gst_event_new_eos() );
       GstBus *bus = gst_element_get_bus( pipeline_ );
       if ( bus ) {
-        gst_bus_timed_pop_filtered( bus, 100 * GST_MSECOND,
-                                    static_cast<GstMessageType>( GST_MESSAGE_EOS ) );
+        std::ignore = gst_bus_timed_pop_filtered( bus, 100 * GST_MSECOND,
+                                                  static_cast<GstMessageType>( GST_MESSAGE_EOS ) );
         gst_object_unref( bus );
       }
 
